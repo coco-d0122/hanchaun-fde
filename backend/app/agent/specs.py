@@ -122,6 +122,22 @@ TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_device_relationship",
+            "description": ("查询电表、设备与楼栋的关联关系（父表/子表/关联设备/归属租户/关系版本）。"
+                            "只读；数据源未提供设备台账时返回 null 并注明，不编造。"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "meter_id": {"type": "string"},
+                    "include_devices": {"type": "boolean", "description": "是否包含关联设备，默认 true"},
+                },
+                "required": ["meter_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "request_human_review",
             "description": ("创建人工复核请求（倍率配置异常/版本冲突/数据缺失/归属不明/安全风险/证据不足/"
                             "需最终业务确认）。创建请求不等于人工已完成审核。只新增请求，不能修改或关闭异常。"),
@@ -150,6 +166,7 @@ TOOL_NAMES: list[str] = [t["function"]["name"] for t in TOOL_SPECS]
 TOOL_PERMISSION: dict[str, str] = {
     "query_energy_data": "anomaly:read",
     "get_meter_config": "anomaly:read",
+    "get_device_relationship": "anomaly:read",
     "validate_meter_data": "anomaly:read",
     "detect_energy_anomaly": "anomaly:read",
     "search_energy_knowledge": "chat:use",
@@ -167,6 +184,7 @@ PRECONDITIONS: dict[str, list[str]] = {
 
 # 允许重试（参数修正型）的工具；SCOPE_DENIED / KB_NOT_READY 永不重试
 RETRYABLE: set[str] = {"query_energy_data", "get_meter_config",
+                       "get_device_relationship",
                        "validate_meter_data", "detect_energy_anomaly",
                        "search_energy_knowledge"}
 

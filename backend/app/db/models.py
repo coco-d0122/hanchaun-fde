@@ -430,3 +430,72 @@ class AgentToolCall(Base):
     error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# ==============================================================================
+# 阶段7：Harness 执行日志 + 报告草稿确认（人工确认机制）
+# ==============================================================================
+
+class AgentExecutionLog(Base):
+    """Harness 执行日志 agent_execution_logs。
+
+    一行 = 一次「模型决策」或「工具调用」：
+      - kind=decision  ：记录本轮选定了哪些工具（只记决策结果，**不记隐藏推理过程**）
+      - kind=tool      ：记录参数、耗时、状态、结果摘要、错误码
+
+    input_parameters 是白名单化后的结构化参数（Pydantic 校验通过才落库），
+    不含 API Key、密码、提示词全文，也不含模型内部推理。
+    """
+
+    __tablename__ = "agent_execution_logs"
+    __table_args__ = (
+        Index("ix_ael_task_round", "task_id", "decision_round", "seq"),
+        Index("ix_ael_user_time", "user_id", "created_at"),
+        Index("ix_ael_tool_time", "tool_name", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(32), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    decision_round: Mapped[int] = mapped_column(Integer, default=1)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(16), default="tool")  # decision / tool
+    tool_name: Mapped[str] = mapped_column(String(64), default="")
+    input_parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    execution_time_ms: Mapped[int] = mapped_column(Integer, default=0)
+    execution_status: Mapped[str] = mapped_column(String(16), default="success")
+    # success / failed / timeout / cancelled / rejected / recorded
+    result_summary: Mapped[str] = mapped_column(String(1024), default="")
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AgentReportDraft(Base):
+    """报告草稿确认账本 agent_report_drafts（人机协同的"暂停点"）。
+
+    状态机：pending → confirmed / cancelled / expired
+    confirmed 时写 review_request_id；idempotency_key 唯一，防重复确认重复建单。
+    force_review=true 表示存在强制复核风险（版本冲突/数据缺失/电气安全风险），
+    即使用户点"取消"，后端也必须独立保留风险记录。
+    """
+
+    __tablename__ = "agent_report_drafts"
+    __table_args__ = (Index("ix_ard_task", "task_id", "created_at"),)
+
+    draft_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(32), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    report_version: Mapped[int] = mapped_column(Integer, default=1)
+    evidence_hash: Mapped[str] = mapped_column(String(64), default="")
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    force_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    force_reason: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True,
+                                                        unique=True)
+    review_request_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

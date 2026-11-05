@@ -1320,3 +1320,110 @@ async def list_agent_tasks(db: AsyncSession, user_id: int | None = None,
         }
         for t, uname in rows
     ]
+
+
+# ============================== Harness 执行日志（阶段7） ==============================
+
+async def log_agent_execution(db: AsyncSession, task_id: str, session_id: str | None,
+                              user_id: int | None, decision_round: int, seq: int,
+                              kind: str, tool_name: str, input_parameters: dict,
+                              execution_time_ms: int, execution_status: str,
+                              result_summary: str, error_code: str | None) -> None:
+    """写一行 Harness 日志（决策或工具调用）。参数已白名单化，摘要已截断。"""
+    from app.db.models import AgentExecutionLog
+
+    db.add(AgentExecutionLog(
+        task_id=task_id, session_id=session_id, user_id=user_id,
+        decision_round=decision_round, seq=seq, kind=kind,
+        tool_name=tool_name[:64], input_parameters=input_parameters or {},
+        execution_time_ms=execution_time_ms, execution_status=execution_status,
+        result_summary=(result_summary or "")[:1024], error_code=error_code))
+    await db.flush()
+
+
+async def list_agent_execution_logs(db: AsyncSession, user_id: int | None = None,
+                                    task_id: str | None = None,
+                                    tool_name: str | None = None,
+                                    decision_round: int | None = None,
+                                    status: str | None = None,
+                                    date_from: str | None = None,
+                                    date_to: str | None = None,
+                                    limit: int = 100,
+                                    offset: int = 0) -> dict[str, Any]:
+    """按用户 / 时间 / 任务 / 工具 / 轮次 / 状态 组合筛选（阶段5 审计页兼容接口）。"""
+    from app.db.models import AgentExecutionLog as L
+
+    stmt = select(L)
+    if user_id is not None:
+        stmt = stmt.where(L.user_id == user_id)
+    if task_id:
+        stmt = stmt.where(L.task_id == task_id)
+    if tool_name:
+        stmt = stmt.where(L.tool_name == tool_name)
+    if decision_round is not None:
+        stmt = stmt.where(L.decision_round == decision_round)
+    if status:
+        stmt = stmt.where(L.execution_status == status)
+    if date_from:
+        stmt = stmt.where(L.created_at >= date_from)
+    if date_to:
+        stmt = stmt.where(L.created_at <= (date_to + " 23:59:59"
+                                          if len(date_to) == 10 else date_to))
+    total = (await db.execute(
+        select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await db.execute(
+        stmt.order_by(L.id.desc()).limit(limit).offset(offset))).scalars().all()
+    return {
+        "total": int(total), "items": [
+            {
+                "id": r.id, "task_id": r.task_id, "session_id": r.session_id,
+                "user_id": r.user_id, "decision_round": r.decision_round,
+                "seq": r.seq, "kind": r.kind, "tool_name": r.tool_name,
+                "input_parameters": r.input_parameters or {},
+                "execution_time_ms": r.execution_time_ms,
+                "execution_status": r.execution_status,
+                "result_summary": r.result_summary, "error_code": r.error_code,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ],
+    }
+
+
+async def create_agent_draft(db: AsyncSession, draft_id: str, task_id: str,
+                             session_id: str | None, user_id: int | None,
+                             content: str, report_version: int,
+                             evidence_hash: str, evidence_ids: list[str],
+                             force_review: bool, force_reason: str) -> None:
+    from app.db.models import AgentReportDraft
+
+    db.add(AgentReportDraft(
+        draft_id=draft_id, task_id=task_id, session_id=session_id, user_id=user_id,
+        content=content, report_version=report_version,
+        evidence_hash=evidence_hash, evidence_ids=evidence_ids,
+        force_review=force_review, force_reason=force_reason[:64],
+        status="pending"))
+    await db.flush()
+
+
+async def get_agent_draft(db: AsyncSession, draft_id: str) -> Any | None:
+    from app.db.models import AgentReportDraft
+
+    return (await db.execute(
+        select(AgentReportDraft)
+        .where(AgentReportDraft.draft_id == draft_id))).scalar_one_or_none()
+
+
+async def update_agent_draft(db: AsyncSession, draft_id: str, status: str,
+                             idempotency_key: str | None = None,
+                             review_request_id: str | None = None) -> None:
+    from app.db.models import AgentReportDraft
+
+    values: dict[str, Any] = {"status": status, "decided_at": datetime.utcnow()}
+    if idempotency_key is not None:
+        values["idempotency_key"] = idempotency_key
+    if review_request_id is not None:
+        values["review_request_id"] = review_request_id
+    await db.execute(update(AgentReportDraft)
+                     .where(AgentReportDraft.draft_id == draft_id)
+                     .values(**values))

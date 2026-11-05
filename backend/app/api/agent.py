@@ -13,12 +13,13 @@ SSE 在阶段4 协议上扩展两类事件：
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Path, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.agent.harness import HarnessRunner
 from app.agent.loop import AgentRunner
 from app.api.deps import (get_current_user, get_permission_cache, require_csrf_header,
                           require_permission)
@@ -37,6 +38,8 @@ class AgentRequest(BaseModel):
     question: str = Field(..., min_length=2, max_length=500)
     anomaly_id: str | None = Field(None, max_length=32)
     session_id: str | None = Field(None, max_length=36)
+    # engine=harness（默认）：阶段7 的 5 轮 Harness；script：阶段6 确定性剧本（回归对照）
+    engine: Literal["harness", "script"] = "harness"
 
 
 def _sse(event: str, data: dict) -> str:
@@ -71,8 +74,11 @@ async def analyze(req: AgentRequest, request: Request,
 
     permissions = sorted({p for r in user.roles
                           for p in get_permission_cache(request).get(r.code, [])})
-    runner = AgentRunner(req.question, req.anomaly_id, session_id, cfg, retriever,
-                         user.id, permissions)
+    runner_cls = HarnessRunner if req.engine == "harness" else AgentRunner
+    runner = runner_cls(req.question, req.anomaly_id, session_id, cfg, retriever,
+                        user.id, permissions,
+                        **({"should_stop": request.is_disconnected}
+                           if req.engine == "harness" else {}))
     prompt_version_id, _ = await get_system_prompt("agent")
 
     async def event_stream():
@@ -156,3 +162,31 @@ async def get_task(task_id: str = Path(min_length=6, max_length=32),
         if "admin" not in {r.code for r in user.roles}:
             raise AppError("FORBIDDEN", "当前角色无权查看该任务", 403)
     return detail
+
+
+@router.get("/logs")
+async def list_execution_logs(
+    request: Request,
+    user: Annotated[User, Depends(get_current_user)],
+    user_id: int | None = Query(None, ge=1),
+    task_id: str | None = Query(None, max_length=32),
+    tool_name: str | None = Query(None, max_length=64),
+    decision_round: int | None = Query(None, ge=1, le=5),
+    status: str | None = Query(None, max_length=16),
+    date_from: str | None = Query(None, description="起始日期 YYYY-MM-DD"),
+    date_to: str | None = Query(None, description="结束日期 YYYY-MM-DD"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """Harness 执行日志：按用户/时间/任务/工具/轮次/状态组合筛选（阶段5 审计兼容）。"""
+    can_audit = "audit:conversation:read" in {
+        p for r in user.roles for p in get_permission_cache(request).get(r.code, [])}
+    uid = user_id if can_audit else user.id
+    async with session_factory() as db:
+        async with db.begin():
+            data = await repo.list_agent_execution_logs(
+                db, user_id=uid, task_id=task_id, tool_name=tool_name,
+                decision_round=decision_round, status=status,
+                date_from=date_from, date_to=date_to, limit=limit, offset=offset)
+    data["scope"] = "all" if can_audit else "own"
+    return data

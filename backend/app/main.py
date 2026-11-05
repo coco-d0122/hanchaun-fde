@@ -152,8 +152,8 @@ def _build_retriever(cfg, entries: list) -> HybridRetriever:  # noqa: ANN001（S
 
 app = FastAPI(
     title="瀚川工业园能耗异常定位智能体",
-    version="0.9.0",
-    description="阶段6：Agent 工具调用（7 工具 + 五道闸 + 任务账本）",
+    version="1.0.0",
+    description="阶段7：Agent Harness 执行循环（5 轮决策 + 依赖门禁 + 执行日志）",
     lifespan=lifespan,
 )
 

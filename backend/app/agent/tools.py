@@ -618,3 +618,39 @@ TOOL_IMPLS = {
     "generate_anomaly_report": generate_anomaly_report,
     "request_human_review": request_human_review,
 }
+
+
+# ---------------------------------------------------------------- 工具 8（薄封装）
+
+def get_device_relationship(ctx: AgentContext, meter_id: str | None = None,
+                            include_devices: bool = True) -> dict:
+    """
+    查询电表-设备-楼栋关联关系（阶段6 并入 get_meter_config，本轮按需求补独立入口）。
+
+    ★ 同一份事实、同一套溯源：内部直接复用 get_meter_config，不另造口径。
+      数据源没有设备台账/租户归属时返回 None 并在 _trace 注明，绝不编造。
+    """
+    cfg = get_meter_config(ctx, meter_id=meter_id, include_topology=True)
+    topo = dict(cfg.get("topology") or {})
+    if not include_devices:
+        topo.pop("devices", None)
+    ev = ctx.add_evidence("device_relationship", meter_id or "",
+                          f"父表 {topo.get('parent') or '无'}，子表 "
+                          f"{len(topo.get('children') or [])} 个")
+    return {
+        "meter_id": meter_id,
+        "building_id": None,          # 数据源未提供独立楼栋台账
+        "parent_meter": topo.get("parent"),
+        "child_meters": topo.get("children") or [],
+        "devices": topo.get("devices"),
+        "tenant": topo.get("tenant"),
+        "binding_version": topo.get("binding_version"),
+        "ownership_clear": bool(topo.get("parent")),
+        "_trace": {"source": "get_meter_config.topology（同一事实来源）",
+                   "evidence_ids": [ev],
+                   "note": topo.get("note", "")},
+    }
+
+
+# 第 8 个工具（薄封装）在函数定义之后注册，避免模块加载时的前向引用
+TOOL_IMPLS["get_device_relationship"] = get_device_relationship

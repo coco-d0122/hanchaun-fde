@@ -134,6 +134,21 @@ async def agent_tasks_page(request: Request,
     })
 
 
+@router.get("/agent-logs", response_class=HTMLResponse)
+async def agent_logs_page(request: Request,
+                          user: User | None = Depends(get_current_user_optional)):
+    """Harness 执行日志页（阶段7）：每轮决策与每次工具调用可追溯。"""
+    if user is None:
+        return RedirectResponse("/login?next=/admin/agent-logs", status_code=302)
+    if "audit:conversation:read" not in await _permission_codes(request, user):
+        return _forbidden(user, "audit:conversation:read")
+
+    request.state.user = user
+    return _templates.TemplateResponse(request, "agent_logs.html", {
+        "username": user.username, "nav": "agent_logs",
+    })
+
+
 @router.get("/kb", response_class=HTMLResponse)
 async def kb_page(request: Request,
                   user: User | None = Depends(get_current_user_optional)):

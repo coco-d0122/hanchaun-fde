@@ -1,4 +1,4 @@
-# 瀚川工业园 · Web 后端（阶段4 + 阶段5 全五批 + 阶段6 Agent）
+# 瀚川工业园 · Web 后端（阶段4 + 阶段5 + 阶段6 Agent + 阶段7 Harness）
 
 基于阶段3原型核心模块（检索 / 规则引擎 / Guardrail 原样迁移）构建的 FastAPI + SQLite + SSE 系统：
 登录鉴权与 RBAC（一批）、管理后台与知识库（二批）、提示词版本化（三批）、
@@ -63,6 +63,7 @@ INIT_PASSWORD='用户密码'  .venv/Scripts/python -m app.init_admin --username 
 | GET | `/api/anomalies/{id}/reviews` | 人工复核记录（只读；本阶段恒为空） |
 | POST | `/api/agent/analyze` | Agent 分析（SSE：task/status/tool_result/token/citations/done） |
 | GET | `/api/agent/tasks` | Agent 任务列表（有审计权限看全库，否则只看本人） |
+| GET | `/api/agent/logs` | Harness 执行日志（用户/时间/任务/工具/轮次/状态组合筛选） |
 | GET | `/api/agent/tasks/{id}` | Agent 任务账本 + 调用轨迹 |
 | GET | `/api/health` | 健康检查（知识库 / LLM 状态） |
 | GET | `/login` + `/` | 登录页 + 聊天页（未登录 302 跳登录） |
@@ -74,6 +75,7 @@ INIT_PASSWORD='用户密码'  .venv/Scripts/python -m app.init_admin --username 
 | GET | `/admin/audit` | AI 对话审计页 |
 | GET | `/admin/anomalies` | 能耗异常事件审计页（只读） |
 | GET | `/admin/agent-tasks` | Agent 任务账本页（状态机快照 + 工具调用轨迹） |
+| GET | `/admin/agent-logs` | Harness 执行日志页（每轮决策 + 每次工具调用） |
 
 **鉴权规则**：所有业务接口需登录（未登录 401 中文错误）；权限不足 403；
 所有 POST/PATCH 写请求须带 `X-Requested-With: XMLHttpRequest` 头（CSRF 防线，
@@ -100,7 +102,10 @@ app/
 ├─ agent/tools.py       # 7 个原子工具实现（只读 + 一个"只增不改"的复核请求）
 ├─ agent/executor.py    # 五道闸 + 防循环预算 + 同参缓存 + 调用留痕
 ├─ agent/state.py       # 任务状态机（门禁的依据，模型无写权）
-├─ agent/loop.py        # 双通道编排：剧本式确定性执行 / LLM 自由循环 + SSE
+├─ agent/loop.py        # 阶段6 剧本式编排（engine=script 回归对照）
+├─ agent/schemas.py     # 8 工具 Pydantic 严格参数校验（extra=forbid 防注入）
+├─ agent/dependencies.py# 依赖图 + 并行/顺序批次规划 + 硬门禁
+├─ agent/harness.py     # 阶段7：最多 5 轮决策的 Harness 执行循环
 scripts/agent_selftest.py  # 阶段6 三场景自测（16 项断言，可作 CI）
 ├─ core/default_prompts.py    # 默认模板种子（15 条 QA 规则 + 7 条异常分析规则）
 ├─ templates/           # Jinja2 管理后台模板（admin_base / kb / prompts）
@@ -248,6 +253,23 @@ cd backend && ../.venv/Scripts/python scripts/agent_selftest.py
 完整实现说明、默认假设与验收证据见仓库根目录《瀚川工业园_阶段6_实现与验收记录_v1.0.md》。
 
 ---
+## Agent Harness 执行循环（阶段7 第一批）
+
+`POST /api/agent/analyze` 默认走 Harness（`engine=script` 保留阶段6 剧本做回归对照），
+循环为「模型决策 → 前置校验 → 执行工具 → 结果回填 → 再决策」，**最多 5 轮模型决策**。
+
+- 同轮相互独立的只读工具并行（`asyncio.gather`）；有依赖的按 `DEPENDENCIES` 分层顺序执行。
+- 参数走 Pydantic `extra=forbid`，`sql/api_key/password` 类字段一律拒绝；没有任意 SQL 通道。
+- 硬门禁读任务状态机：`detect` 需 `validation_status=passed`；`report` 需查询+校验+有效证据。
+- 单工具 15 秒超时、瞬时错误重试 1 次、连接断开/用户取消即停止并说明原因；到 5 轮自动停止并给出已完成步骤与未完成原因。
+- 每轮决策与每次工具调用写 `agent_execution_logs`（task_id/session_id/user_id/decision_round/
+  tool_name/input_parameters/execution_time_ms/execution_status/result_summary/error_code/created_at），
+  `GET /api/agent/logs` 与 `/admin/agent-logs` 供阶段5 审计链查询；不记 API Key、密码、隐藏推理。
+- 无 LLM Key 时 Function Calling 尝试失败后回落确定性规划器，工具链/门禁/日志/预算全部真实执行。
+- 自测：`scripts/harness_selftest.py`（25 项全通过）；阶段6 `scripts/agent_selftest.py` 16 项回归通过。
+- 选型说明、架构图、目录结构、SQLAlchemy 模型与默认假设见仓库根目录
+  《瀚川工业园_阶段7_Harness执行循环设计说明_v1.0.md》。
+
 ## 边界声明（当前明确不做）
 
 真实计量系统接入、任何修改能耗数据或异常状态的写接口、多租户数据域、
