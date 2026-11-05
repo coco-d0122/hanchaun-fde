@@ -104,6 +104,21 @@ def _forbidden(user: User, perm: str) -> HTMLResponse:
         status_code=403)
 
 
+@router.get("/logs", response_class=HTMLResponse)
+async def logs_page(request: Request,
+                    user: User | None = Depends(get_current_user_optional)):
+    """系统操作日志页（阶段5第五批）：只读，按时间/类型/操作人/结果/对象号筛选。"""
+    if user is None:
+        return RedirectResponse("/login?next=/admin/logs", status_code=302)
+    if "log:read" not in await _permission_codes(request, user):
+        return _forbidden(user, "log:read")
+
+    request.state.user = user
+    return _templates.TemplateResponse(request, "logs.html", {
+        "username": user.username, "nav": "logs",
+    })
+
+
 @router.get("/kb", response_class=HTMLResponse)
 async def kb_page(request: Request,
                   user: User | None = Depends(get_current_user_optional)):

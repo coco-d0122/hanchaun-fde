@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -1122,3 +1122,79 @@ async def dashboard_stats(db: AsyncSession) -> dict[str, Any]:
             for a, uname in logs
         ],
     }
+
+
+# ============================== 系统操作日志（阶段5第五批） ==============================
+
+# 8 类 action 枚举（方案 7.3）＋实际代码里出现的写入动作，统一中文名便于页面展示
+ACTION_LABELS: dict[str, str] = {
+    "login": "登录",
+    "logout": "退出",
+    "kb_upload": "知识库上传",
+    "kb_delete": "知识库删除",
+    "kb_reindex": "知识库重建索引",
+    "kb_reprocess": "知识库重新处理",
+    "prompt_update": "提示词更新",
+    "user_create": "创建用户",
+    "user_update": "修改用户",
+    "user_role_change": "角色变更",
+    "flag_update": "风险标记",
+    "anomaly_review": "异常复核",
+}
+
+
+async def list_audit_logs(db: AsyncSession, date_from: str | None = None,
+                          date_to: str | None = None, action: str | None = None,
+                          user_id: int | None = None, result: str | None = None,
+                          keyword: str | None = None,
+                          limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """操作日志查询：时间范围 / 类型 / 操作人 / 结果 / 关键词（对象号）。"""
+    usr = User
+    stmt = (select(AuditLog, usr.username).outerjoin(usr, usr.id == AuditLog.user_id))
+    if date_from:
+        stmt = stmt.where(AuditLog.created_at >= date_from)
+    if date_to:
+        stmt = stmt.where(AuditLog.created_at
+                          <= (date_to + " 23:59:59" if len(date_to) == 10 else date_to))
+    if action:
+        stmt = stmt.where(AuditLog.action == action)
+    if user_id:
+        stmt = stmt.where(AuditLog.user_id == user_id)
+    if result:
+        stmt = stmt.where(AuditLog.result == result)
+    if keyword:
+        like = f"%{keyword}%"
+        stmt = stmt.where(or_(AuditLog.object_id.like(like),
+                              AuditLog.business_ref.like(like)))
+
+    total = (await db.execute(
+        select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await db.execute(
+        stmt.order_by(AuditLog.id.desc()).limit(limit).offset(offset))).all()
+    return {
+        "total": int(total),
+        "items": [
+            {
+                "id": a.id, "action": a.action,
+                "action_name": ACTION_LABELS.get(a.action, a.action),
+                "username": uname or "系统", "user_id": a.user_id,
+                "object_type": a.object_type, "object_id": a.object_id,
+                "result": a.result, "detail": a.detail or {},
+                "business_ref": a.business_ref,
+                "created_at": a.created_at.isoformat(),
+            }
+            for a, uname in rows
+        ],
+    }
+
+
+async def purge_old_audit_logs(db: AsyncSession, retention_days: int) -> int:
+    """按保留天数清理过期日志（默认 90 天，配置项可改）。返回删除条数。"""
+    from datetime import datetime as _dt, timedelta as _td
+
+    if retention_days <= 0:
+        return 0
+    cutoff = _dt.now() - _td(days=retention_days)
+    result = await db.execute(
+        delete(AuditLog).where(AuditLog.created_at < cutoff))
+    return int(result.rowcount or 0)

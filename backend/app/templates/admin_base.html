@@ -93,7 +93,7 @@
         <a href="/admin/prompts" {% if nav == 'prompts' %}class="active"{% endif %}>AI 提示词管理</a>
         <a href="/admin/audit" {% if nav == 'audit' %}class="active"{% endif %}>AI 对话审计</a>
         <a href="/admin/anomalies" {% if nav == 'anomalies' %}class="active"{% endif %}>能耗异常事件</a>
-        <a href="#" style="color:#9aa2ac" title="第五批交付">系统操作日志（待开放）</a>
+        <a href="/admin/logs" {% if nav == 'logs' %}class="active"{% endif %}>系统操作日志</a>
       </nav>
       <div class="foot">
         <span class="user">{{ username }}</span>

@@ -91,6 +91,7 @@ class Settings(BaseSettings):
         return BACKEND_DIR / "uploads"
 
     # ---- 阶段5第二批：知识库上传限制（D1/D2 默认值）----
+    log_retention_days: int = 90          # 操作日志保留天数（方案 D6 默认 90）
     kb_upload_max_mb: int = 10            # 单文件上限（MB）
     kb_allowed_exts: list[str] = [".md", ".pdf"]   # 上传白名单
 

@@ -1,0 +1,145 @@
+{% extends "admin_base.html" %}
+{% block title %}系统操作日志{% endblock %}
+{% block pagetitle %}系统操作日志{% endblock %}
+
+{% block head %}
+<style>
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .filters label { font-size: 12.5px; color: var(--text-2); }
+  .mono { font-family: Consolas, monospace; font-size: 12px; }
+  .ok { color: var(--ok); }
+  .bad { color: var(--danger); }
+  tr.detail-row td { background: #fafbfc; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; font-size: 12.5px; color: var(--text-2); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="msg" class="msg"></div>
+
+<div class="card">
+  <div class="filters">
+    <label>起 <input type="date" id="f-from"></label>
+    <label>止 <input type="date" id="f-to"></label>
+    <label>类型 <select id="f-action"><option value="">全部</option></select></label>
+    <label>操作人ID <input type="number" min="1" id="f-user" style="width:90px" placeholder="如 1"></label>
+    <label>结果
+      <select id="f-result"><option value="">全部</option>
+        <option value="success">成功</option><option value="failure">失败</option>
+      </select>
+    </label>
+    <label>对象号 <input type="text" id="f-kw" placeholder="如 7 / AN-2026…" style="width:150px"></label>
+    <button class="btn primary" id="btn-search">查询</button>
+    <button class="btn" id="btn-reset">重置</button>
+  </div>
+  <div class="hint" id="sum">共 0 条</div>
+</div>
+
+<div class="card" style="padding:0; overflow-x:auto;">
+  <table>
+    <thead>
+      <tr><th>时间</th><th>操作人</th><th>类型</th><th>对象</th><th>结果</th><th>摘要</th><th></th></tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+  </table>
+  <div class="pager" style="padding:12px 16px;">
+    <button class="btn small" id="btn-prev">上一页</button>
+    <span id="page-info">-</span>
+    <button class="btn small" id="btn-next">下一页</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="hint">
+    <b>说明</b><br>
+    1. 日志只读：接口不提供修改与删除；过期清理只按保留策略在启动时执行。<br>
+    2. <code>detail</code> 白名单化：只存操作摘要（用户名/角色/对象号/版本号/变更字段），
+       密码、API Key、提示词全文在类型层面就进不了日志。<br>
+    3. 保留天数：<b id="retention">-</b> 天（<code>LOG_RETENTION_DAYS</code>，方案默认 90 天，待业务确认）。
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+const $ = (id) => document.getElementById(id);
+const PAGE = 20;
+let offset = 0;
+let total = 0;
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function fmt(s) { return s ? String(s).replace('T', ' ').slice(0, 19) : '-'; }
+function showMsg(t, ok) {
+  const el = $('msg'); el.className = 'msg ' + (ok ? 'ok' : 'err'); el.textContent = t;
+  setTimeout(() => { el.className = 'msg'; }, 6000);
+}
+
+async function loadActions() {
+  try {
+    const r = await fetch('/api/logs/actions');
+    if (!r.ok) return;
+    const d = await r.json();
+    $('f-action').innerHTML = '<option value="">全部</option>' +
+      (d.items || []).map(a => `<option value="${a.code}">${a.name}</option>`).join('');
+  } catch (e) { /* 静默 */ }
+}
+
+async function search(resetOffset) {
+  if (resetOffset) offset = 0;
+  const p = new URLSearchParams({ limit: PAGE, offset });
+  const map = { 'f-from': 'date_from', 'f-to': 'date_to', 'f-action': 'action',
+                'f-user': 'user_id', 'f-result': 'result', 'f-kw': 'keyword' };
+  for (const [id, key] of Object.entries(map)) {
+    const v = $(id).value.trim();
+    if (v) p.set(key, v);
+  }
+  try {
+    const r = await fetch('/api/logs?' + p.toString());
+    if (r.status === 401) { location.href = '/login?next=/admin/logs'; return; }
+    const d = await r.json();
+    if (!r.ok) { showMsg(d.message || '查询失败', false); return; }
+    total = d.total;
+    $('retention').textContent = d.retention_days ?? '-';
+    $('sum').textContent = `共 ${d.total} 条（每页 ${PAGE} 条）`;
+    $('page-info').textContent = `${offset + 1} - ${Math.min(offset + PAGE, total)} / ${total}`;
+    $('rows').innerHTML = (d.items || []).map(l => `
+      <tr>
+        <td>${fmt(l.created_at)}</td>
+        <td>${esc(l.username)}</td>
+        <td>${esc(l.action_name)}</td>
+        <td>${esc(l.object_type)}${l.object_id ? ' #' + esc(l.object_id) : ''}</td>
+        <td class="${l.result === 'success' ? 'ok' : 'bad'}">
+          ${l.result === 'success' ? '成功' : esc(l.result)}</td>
+        <td class="mono">${esc(JSON.stringify(l.detail))}</td>
+        <td><button class="btn small" onclick="toggle(${l.id})">明细</button></td>
+      </tr>
+      <tr class="detail-row" id="d-${l.id}" style="display:none;">
+        <td colspan="7"><pre class="mono" style="margin:0; white-space:pre-wrap;">${esc(JSON.stringify(l.detail, null, 2))}</pre></td>
+      </tr>`).join('') || '<tr><td colspan="7" class="empty">没有符合条件的日志</td></tr>';
+  } catch (e) { showMsg('查询失败：' + e.message, false); }
+}
+
+function toggle(id) {
+  const row = document.getElementById('d-' + id);
+  if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+$('btn-search').addEventListener('click', () => search(true));
+$('btn-reset').addEventListener('click', () => {
+  ['f-from','f-to','f-kw','f-user'].forEach(id => $(id).value = '');
+  ['f-action','f-result'].forEach(id => $(id).value = '');
+  search(true);
+});
+$('btn-prev').addEventListener('click', () => {
+  offset = Math.max(0, offset - PAGE); search(false);
+});
+$('btn-next').addEventListener('click', () => {
+  if (offset + PAGE < total) { offset += PAGE; search(false); }
+});
+
+loadActions().then(() => search(true));
+</script>
+{% endblock %}

@@ -24,7 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import (admin, anomalies, audit, auth, chat, kb, prompts,
+from app.api import (admin, anomalies, audit, auth, chat, kb, logs, prompts,
                      sessions, users)
 from app.core.config import get_settings
 from app.core.embedder import build_embedder
@@ -89,6 +89,13 @@ async def lifespan(app: FastAPI):
             seeded_prompts = await repo.seed_prompt_templates(db)
             app.state.permission_cache = await repo.list_role_permissions(db)
     logger.info("角色/权限种子就绪：%s 个角色", len(app.state.permission_cache))
+
+    # ---- 日志保留策略（方案 D6：默认 90 天，配置化以便业务确认后不改代码）----
+    async with session_factory() as db:
+        async with db.begin():
+            purged = await repo.purge_old_audit_logs(db, cfg.log_retention_days)
+    if purged:
+        logger.info("操作日志清理：删除 %s 条超过 %s 天的记录", purged, cfg.log_retention_days)
     if seeded_prompts:
         logger.info("提示词模板种子写入：%s 套（qa / anomaly，各生成 v1）", seeded_prompts)
 
@@ -145,8 +152,8 @@ def _build_retriever(cfg, entries: list) -> HybridRetriever:  # noqa: ANN001（S
 
 app = FastAPI(
     title="瀚川工业园能耗异常定位智能体",
-    version="0.7.0",
-    description="阶段5第四批：对话审计（风险标记）+ 异常事件审计（六态只读）",
+    version="0.8.0",
+    description="阶段5第五批：系统操作日志 + 全链路联调（阶段5 收口）",
     lifespan=lifespan,
 )
 
@@ -159,6 +166,7 @@ app.include_router(users.router)
 app.include_router(kb.router)
 app.include_router(prompts.router)
 app.include_router(audit.router)
+app.include_router(logs.router)
 app.include_router(admin.router)
 
 

@@ -428,7 +428,7 @@ async def reprocess_document(app, cfg: Settings, doc_id: int, user_id: int) -> N
             await repo.set_kb_status(db, doc_id, "published", "")
             await repo.set_kb_version_published(db, doc_id, content_hash, chunk_count)
             await repo.write_audit_log(
-                db, "kb_reprocess", user_id,
+                db, "kb_reindex", user_id,
                 object_type="kb_document", object_id=str(doc_id),
                 detail={"filename": doc.filename, "chunks": chunk_count})
     logger.info("文档重新处理完成：#%s %s（%s 切片）", doc_id, doc.filename, chunk_count)

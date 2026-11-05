@@ -1,8 +1,8 @@
-# 瀚川工业园 · Web 后端与聊天界面（阶段4 + 阶段5第一/二/三/四批）
+# 瀚川工业园 · Web 后端与聊天界面（阶段4 + 阶段5 全五批）
 
 基于阶段3原型核心模块（检索 / 规则引擎 / Guardrail 原样迁移）构建的 FastAPI + SQLite + SSE 流式聊天系统，
-含登录鉴权与 RBAC 权限（一批）、管理后台与知识库（二批）、提示词版本化（三批）、
-对话与异常审计（四批）。
+含登录鉴权与 RBAC（一批）、管理后台与知识库（二批）、提示词版本化（三批）、
+对话与异常审计（四批）、操作日志与联调（五批）。
 
 ## 运行
 
@@ -175,6 +175,18 @@ PUT 保存 → 插入新版本 + 移动指针 + 立即失效缓存 → 下一个
   `anomaly_events.rule_result` / `evidence`。
 - 页面闸门：`/admin/anomalies` 要求 `anomaly:read` + `audit:conversation:read`——
   普通用户虽然能看事件（聊天页需要），但进不了含 AI 草稿与复核记录的后台审计视图。
+
+## 系统操作日志（第五批）
+
+- `GET /api/logs`：时间范围 / 类型 / 操作人 / 结果 / 对象号 组合筛选 + 分页；
+  `GET /api/logs/actions` 给前端下拉用的类型字典。
+- 页面 `/admin/logs`：只读表格 + 明细展开 + 上一页/下一页；接口不提供修改与删除。
+- 动作枚举（方案 7.3 的 8 类落地）：`login / logout / kb_upload / kb_delete / kb_reindex /
+  prompt_update / user_create / user_update / flag_update`（`anomaly_review` 预留给签核接口）。
+- `detail` 白名单化：只存操作摘要，密码 / API Key / 提示词全文进不了日志
+  （实测对全量日志 grep `testpass123 / password_hash / api_key / sk-` 均为 0 命中）。
+- 保留策略：`LOG_RETENTION_DAYS=90`（配置文件项），启动时按保留天数清理过期日志并记条数。
+- 全链路联调与逐条验收证据见仓库根目录《瀚川工业园_阶段5_验收自测记录_v1.0.md》。
 
 ## 边界声明（当前明确不做）
 
