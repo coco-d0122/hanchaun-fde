@@ -56,6 +56,7 @@ async def analyze(req: AgentRequest, request: Request,
         raise kb_not_ready()
 
     # 会话：沿用传入的（须属本人），否则新建——审计链需要 messages 落库
+    created_conversation = False
     async with session_factory() as db:
         async with db.begin():
             conv = await repo.get_conversation(db, req.session_id) if req.session_id else None
@@ -64,6 +65,7 @@ async def analyze(req: AgentRequest, request: Request,
             if conv is None:
                 conv = await repo.create_conversation(
                     db, f"Agent 分析：{req.question[:24]}", user_id=user.id)
+                created_conversation = True
             session_id = conv.id
             await repo.add_message(db, session_id, "user", req.question, "anomaly")
 
@@ -74,7 +76,8 @@ async def analyze(req: AgentRequest, request: Request,
     prompt_version_id, _ = await get_system_prompt("agent")
 
     async def event_stream():
-        yield _sse("session", {"session_id": session_id, "created": not req.session_id})
+        yield _sse("session", {"session_id": session_id,
+                               "created": created_conversation})
         answer_parts: list[str] = []
         final: dict | None = None
         try:
@@ -120,6 +123,22 @@ async def analyze(req: AgentRequest, request: Request,
     return StreamingResponse(event_stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+@router.get("/tasks")
+async def list_tasks(
+    request: Request,
+    user: Annotated[User, Depends(get_current_user)],
+    limit: int = 50,
+) -> dict:
+    """Agent 任务列表：有审计权限看全库，否则只看本人任务。"""
+    can_audit = "audit:conversation:read" in {
+        p for r in user.roles for p in get_permission_cache(request).get(r.code, [])}
+    async with session_factory() as db:
+        async with db.begin():
+            items = await repo.list_agent_tasks(
+                db, user_id=None if can_audit else user.id, limit=limit)
+    return {"total": len(items), "items": items, "scope": "all" if can_audit else "own"}
 
 
 @router.get("/tasks/{task_id}")

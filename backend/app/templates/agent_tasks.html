@@ -1,0 +1,140 @@
+{% extends "admin_base.html" %}
+{% block title %}Agent 任务账本{% endblock %}
+{% block pagetitle %}Agent 任务账本{% endblock %}
+
+{% block head %}
+<style>
+  .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: none; z-index: 20; }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 680px; max-width: 94vw;
+    background: #fff; border-left: 1px solid var(--border); z-index: 21;
+    display: none; flex-direction: column; }
+  .drawer.open, .drawer-mask.open { display: flex; }
+  .drawer-head { padding: 14px 18px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center; }
+  .drawer-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+  .kv { font-size: 13px; line-height: 1.9; }
+  .kv b { color: var(--text-2); }
+  .step { border-left: 3px solid var(--blue); padding: 8px 12px; margin: 8px 0;
+    background: #fafbfc; font-size: 12.5px; line-height: 1.7; }
+  .step.fail { border-left-color: var(--danger); background: #fdf1f0; }
+  .step .h { font-family: Consolas, monospace; font-weight: 600; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px; background:#eef1f5; color:#57606a; }
+  .badge.ok { background:#e6f6ec; color:#16a34a; }
+  .badge.warn { background:#fdf3e6; color:#d97706; }
+  .badge.bad { background:#fdeaea; color:#dc2626; }
+  .mono { font-family: Consolas, monospace; font-size: 12px; color: var(--text-2); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="msg" class="msg"></div>
+
+<div class="card">
+  <div style="font-weight:600; margin-bottom:8px;">查询范围</div>
+  <div class="hint" id="scope">加载中…</div>
+  <div class="hint" style="margin-top:8px;">
+    <b>说明</b>：账本只由工具执行器写入，模型无写权；点击任务可查看完整调用轨迹
+    （每步输入/输出摘要、错误码、耗时），用于回答"卡在哪一步、哪个工具、什么错误"。
+  </div>
+</div>
+
+<div class="card" style="padding:0; overflow-x:auto;">
+  <table>
+    <thead>
+      <tr><th>任务号</th><th>用户</th><th>状态</th><th>校验</th><th>复核</th><th>报告</th>
+          <th>步数</th><th>证据</th><th>时间</th><th></th></tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="10" class="empty">加载中…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="drawer-mask" id="mask"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-head"><b>任务详情与调用轨迹</b><button class="btn small" id="btn-close">关闭</button></div>
+  <div class="drawer-body" id="detail">加载中…</div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+const $ = (id) => document.getElementById(id);
+const ST = { running:'执行中', completed:'已完成', budget_exceeded:'预算超限', failed:'失败' };
+const VAL = { not_run:'未执行', passed:'通过', issues_found:'发现问题' };
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function fmt(s) { return s ? String(s).replace('T',' ').slice(0,19) : '-'; }
+function badge(t, cls) { return `<span class="badge ${cls || ''}">${esc(t)}</span>`; }
+
+async function load() {
+  try {
+    const r = await fetch('/api/agent/tasks');
+    if (r.status === 401) { location.href = '/login?next=/admin/agent-tasks'; return; }
+    const d = await r.json();
+    if (!r.ok) { $('scope').textContent = d.message || '加载失败'; return; }
+    $('scope').textContent = d.scope === 'all' ? '当前账号拥有审计权限：可见全库任务'
+                                               : '当前账号只能查看本人发起的任务';
+    $('rows').innerHTML = (d.items || []).map(t => `
+      <tr>
+        <td class="mono">${esc(t.task_id)}</td>
+        <td>${esc(t.username)}</td>
+        <td>${badge(ST[t.status] || t.status, t.status === 'completed' ? 'ok' : 'warn')}</td>
+        <td>${badge(VAL[t.validation_status] || t.validation_status,
+                    t.validation_status === 'passed' ? 'ok' : (t.validation_status === 'issues_found' ? 'bad' : ''))}</td>
+        <td>${t.review_required ? badge('待复核/' + (t.review_status || '-'), 'warn') : '-'}</td>
+        <td>${t.report_status !== 'none' ? badge(t.report_status, 'ok') : '-'}</td>
+        <td>${t.tool_call_count}</td>
+        <td>${t.evidence_count}</td>
+        <td>${fmt(t.created_at)}</td>
+        <td><button class="btn small" onclick="openDetail('${esc(t.task_id)}')">轨迹</button></td>
+      </tr>`).join('') || '<tr><td colspan="10" class="empty">暂无 Agent 任务</td></tr>';
+  } catch (e) { $('scope').textContent = '加载失败：' + e.message; }
+}
+
+async function openDetail(taskId) {
+  $('mask').classList.add('open'); $('drawer').classList.add('open');
+  $('detail').textContent = '加载中…';
+  const r = await fetch(`/api/agent/tasks/${encodeURIComponent(taskId)}`);
+  const d = await r.json();
+  if (!r.ok) { $('detail').textContent = d.message || '加载失败'; return; }
+
+  const calls = (d.tool_calls || []).map(c => `
+    <div class="step ${c.success ? '' : 'fail'}">
+      <div class="h">#${c.seq} ${esc(c.tool_name)}
+        ${c.success ? badge('成功','ok') : badge('拒绝：' + (c.error_code || 'ERROR'),'bad')}
+        <span class="mono">${c.duration_ms}ms</span></div>
+      <div>入参：${esc(c.input_digest)}</div>
+      <div>结果：${esc(c.output_digest)}</div>
+    </div>`).join('') || '<div class="hint">无调用记录</div>';
+
+  $('detail').innerHTML = `
+    <div class="kv">
+      <b>任务号</b>：${esc(d.task_id)}　${badge(ST[d.status] || d.status, d.status === 'completed' ? 'ok' : 'warn')}<br>
+      <b>用户</b>：#${d.user_id ?? '-'}　<b>会话</b>：${esc(d.session_id || '-')}<br>
+      <b>当前阶段</b>：${esc(d.current_step)}　<b>工具调用</b>：${d.tool_call_count} 次<br>
+      <b>校验</b>：${VAL[d.validation_status] || d.validation_status}　
+      <b>检测</b>：${esc(d.anomaly_status)}　<b>报告</b>：${esc(d.report_status)}<br>
+      <b>人工复核</b>：${d.review_required ? '需要（' + esc(d.review_status) + '）' : '未触发'}　
+      <b>证据</b>：${(d.evidence_refs || []).length} 条<br>
+      <b>创建</b>：${fmt(d.created_at)}　<b>结束</b>：${fmt(d.finished_at)}
+    </div>
+    <div style="margin-top:14px;"><b>调用轨迹</b></div>
+    ${calls}
+    <div style="margin-top:14px;"><b>状态机快照 / 结果摘要</b></div>
+    <pre class="mono" style="white-space:pre-wrap;">${esc(JSON.stringify(d.result_digest || {}, null, 2))}</pre>
+    <div style="margin-top:12px;">
+      ${d.session_id ? `<a class="btn small" href="/admin/audit">到对话审计页查该会话</a>` : ''}
+    </div>`;
+}
+
+$('btn-close').addEventListener('click', () => {
+  $('mask').classList.remove('open'); $('drawer').classList.remove('open');
+});
+$('mask').addEventListener('click', () => {
+  $('mask').classList.remove('open'); $('drawer').classList.remove('open');
+});
+load();
+</script>
+{% endblock %}

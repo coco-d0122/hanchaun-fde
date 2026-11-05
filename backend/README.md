@@ -62,6 +62,7 @@ INIT_PASSWORD='用户密码'  .venv/Scripts/python -m app.init_admin --username 
 | PATCH | `/api/audit/flags/{id}` | 更新标记状态（待处理/已处理/已驳回） |
 | GET | `/api/anomalies/{id}/reviews` | 人工复核记录（只读；本阶段恒为空） |
 | POST | `/api/agent/analyze` | Agent 分析（SSE：task/status/tool_result/token/citations/done） |
+| GET | `/api/agent/tasks` | Agent 任务列表（有审计权限看全库，否则只看本人） |
 | GET | `/api/agent/tasks/{id}` | Agent 任务账本 + 调用轨迹 |
 | GET | `/api/health` | 健康检查（知识库 / LLM 状态） |
 | GET | `/login` + `/` | 登录页 + 聊天页（未登录 302 跳登录） |
@@ -72,6 +73,7 @@ INIT_PASSWORD='用户密码'  .venv/Scripts/python -m app.init_admin --username 
 | GET | `/admin/prompts` | AI 提示词管理页 |
 | GET | `/admin/audit` | AI 对话审计页 |
 | GET | `/admin/anomalies` | 能耗异常事件审计页（只读） |
+| GET | `/admin/agent-tasks` | Agent 任务账本页（状态机快照 + 工具调用轨迹） |
 
 **鉴权规则**：所有业务接口需登录（未登录 401 中文错误）；权限不足 403；
 所有 POST/PATCH 写请求须带 `X-Requested-With: XMLHttpRequest` 头（CSRF 防线，
@@ -232,6 +234,20 @@ cd backend && ../.venv/Scripts/python scripts/agent_selftest.py
 # NumberTrace、账本回查、跳过校验被物理拒绝（含重复请求幂等）、UNKNOWN_TOOL、SCOPE_DENIED
 ```
 
+## 前端接入（阶段6 收口）
+
+- 聊天页新增第三模式 **Agent 深度分析**：走 `/api/agent/analyze`，保留 `/api/chat` 原协议与既有模式不变。
+- 回答气泡上方渲染**可折叠工具轨迹卡片**：每步工具名、成功/拒绝、错误码、摘要、耗时；
+  `gate_blocked`（校验拦截检测）与 `fallback`（离线回落）以提示行显示；完成后自动收起。
+- 异常事件面板新增「Agent 深度分析」按钮（自动带入事件号、直接进入剧本）；原「AI 分析」按钮行为不变。
+- `done` 事件的状态字段渲染为角标：数据校验是否通过、是否已提交人工复核、报告草稿状态、
+  是否使用确定性剧本。
+- 管理后台 `/admin/agent-tasks`：任务列表 + 抽屉式调用轨迹（入参/结果摘要、错误码、耗时、
+  状态机快照），可跳到对话审计页按会话追溯。普通用户页面 403，接口只能查本人任务。
+
+完整实现说明、默认假设与验收证据见仓库根目录《瀚川工业园_阶段6_实现与验收记录_v1.0.md》。
+
+---
 ## 边界声明（当前明确不做）
 
 真实计量系统接入、任何修改能耗数据或异常状态的写接口、多租户数据域、

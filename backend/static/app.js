@@ -322,7 +322,8 @@ async function openSession(sessionId) {
 }
 
 function setModeTag(mode) {
-  els.modeTag.textContent = mode === "anomaly" ? "● 异常分析" : "● 知识问答";
+  els.modeTag.textContent = mode === "anomaly" ? "● 异常分析"
+    : mode === "agent" ? "● Agent 深度分析" : "● 知识问答";
   const radios = document.querySelectorAll('input[name="mode"]');
   radios.forEach((r) => { r.checked = r.value === mode; });
 }
@@ -358,6 +359,14 @@ async function sendQuestion() {
   const question = els.input.value.trim();
   if (!question) return;
   const mode = document.querySelector('input[name="mode"]:checked').value;
+
+  // 阶段6：Agent 通道走独立 SSE 端点（7 工具 + 五道闸），不走 /api/chat
+  if (mode === "agent") {
+    els.input.value = "";
+    updateCharCount();
+    await sendAgentQuestion(question);
+    return;
+  }
 
   els.input.value = "";
   updateCharCount();
@@ -507,6 +516,178 @@ async function readSseStream(resp, aiEl, handler) {
   return sessionId;
 }
 
+/* ================================================================
+ * 阶段6：Agent 通道（/api/agent/analyze）+ 工具轨迹可视化
+ * 协议扩展：task / status(tool_calling|gate_blocked|fallback) / tool_result /
+ *           token / citations / done
+ * 轨迹卡片只是"可解释性展示"，不承担安全职责：门禁在服务端执行器里。
+ * ================================================================ */
+
+/** 建一个可折叠的 Agent 工具轨迹卡片，插在回答气泡之前 */
+function buildAgentTrace(wrap) {
+  const box = document.createElement("details");
+  box.className = "agent-trace";
+  box.open = true;                       // 生成中默认展开，用户可随时收起
+  const head = document.createElement("summary");
+  head.className = "trace-head";
+  head.innerHTML = '<span class="trace-robot">🤖</span> '
+    + '<span class="trace-title">Agent 工具轨迹</span> '
+    + '<span class="trace-count">0 步</span>';
+  const body = document.createElement("div");
+  body.className = "trace-steps";
+  box.appendChild(head);
+  box.appendChild(body);
+  wrap.insertBefore(box, wrap.querySelector(".bubble"));
+  return { box, head, body };
+}
+
+function setTraceMeta(trace, taskId, finalText) {
+  const title = trace.head.querySelector(".trace-title");
+  if (taskId) title.textContent = `Agent 工具轨迹 · ${taskId}`;
+  const count = trace.head.querySelector(".trace-count");
+  const steps = trace.body.querySelectorAll(".trace-step").length;
+  count.textContent = finalText || `${steps} 步`;
+}
+
+function appendTraceStep(trace, d) {
+  const row = document.createElement("div");
+  row.className = "trace-step" + (d.ok ? " ok" : " fail");
+  const icon = d.ok ? "✓" : "⛔";
+  const err = d.error_code ? `<span class="trace-code">${escapeHtml(d.error_code)}</span>` : "";
+  const ms = d.duration_ms != null ? `<span class="trace-ms">${d.duration_ms}ms</span>` : "";
+  const cached = d.cached ? '<span class="trace-code">缓存命中</span>' : "";
+  row.innerHTML = `<span class="trace-icon">${icon}</span>`
+    + `<span class="trace-tool">${escapeHtml(d.tool || "")}</span>`
+    + `<span class="trace-summary">${escapeHtml(d.summary || "")}</span>`
+    + err + cached + ms;
+  trace.body.appendChild(row);
+  trace.body.scrollTop = trace.body.scrollHeight;
+}
+
+function appendTraceNote(trace, text, kind) {
+  const row = document.createElement("div");
+  row.className = "trace-step note" + (kind ? ` ${kind}` : "");
+  row.textContent = text;
+  trace.body.appendChild(row);
+}
+
+/** 发送 Agent 深度分析（独立 SSE 流，保留 /api/chat 原有协议不变） */
+async function sendAgentQuestion(question, anomalyIdOverride) {
+  if (state.generating) return;
+  const anomalyId = anomalyIdOverride || state.lastAnomalyId || null;
+
+  const userEl = buildMsgEl("user");
+  userEl.bubble.textContent = question;
+  userEl.time.textContent = fmtTime(new Date().toISOString());
+
+  const aiEl = buildMsgEl("assistant");
+  setStatusBubble(aiEl.wrap, "正在规划分析步骤……");
+  const trace = buildAgentTrace(aiEl.wrap);
+
+  state.generating = true;
+  setBusy(true);
+  state.abortCtrl = new AbortController();
+
+  let citations = [];
+  let gotDone = false;
+  let streamOk = false;
+  let httpError = null;
+  let taskId = null;
+
+  try {
+    const resp = await fetch("/api/agent/analyze", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: JSON.stringify({
+        session_id: state.sessionId,
+        question,
+        anomaly_id: anomalyId,
+      }),
+      signal: state.abortCtrl.signal,
+    });
+    if (resp.status === 401) { location.href = "/login"; return; }
+    if (!resp.ok) {
+      httpError = await resp.json().catch(() => ({ message: `HTTP ${resp.status}` }));
+      throw new Error(httpError.message || `HTTP ${resp.status}`);
+    }
+    streamOk = true;
+    await readSseStream(resp, aiEl, (ev, data) => {
+      switch (ev) {
+        case "session":
+          if (data.session_id) state.sessionId = data.session_id;
+          if (data.created) els.chatTitle.textContent = question.slice(0, 30);
+          break;
+        case "task":
+          taskId = data.task_id;
+          setTraceMeta(trace, taskId);
+          appendTraceNote(trace, "任务账本已建立，工具调用将逐步记录", "sys");
+          break;
+        case "status":
+          setStatusBubble(aiEl.wrap, data.text || "正在执行…");
+          if (data.stage === "gate_blocked") appendTraceNote(trace, data.text, "warn");
+          if (data.stage === "fallback") appendTraceNote(trace, data.text, "sys");
+          break;
+        case "tool_result":
+          appendTraceStep(trace, data);
+          setTraceMeta(trace, taskId);
+          break;
+        case "token":
+          clearStatusBubble(aiEl.wrap);
+          aiEl.bubble.innerHTML += renderMarkdown(data.delta)
+            .replace(/<p>(.*)<\/p>/, "$1");
+          scrollBottom();
+          break;
+        case "citations":
+          citations = data.items || [];
+          break;
+        case "done":
+          gotDone = true;
+          clearStatusBubble(aiEl.wrap);
+          setTraceMeta(trace, taskId, `完成 · ${data.tool_calls || 0} 步`);
+          trace.box.open = false;        // 生成完毕自动收起，避免遮挡回答
+          finishAssistant(aiEl, "anomaly", citations, data);
+          if (data.llm_mode === "offline_scripted") {
+            renderBadge(aiEl.wrap, "mock", "确定性剧本执行（未调用真实大模型）");
+          }
+          renderBadge(aiEl.wrap,
+            data.validation_status === "passed" ? "guard-ok" : "guard-bad",
+            `数据校验：${data.validation_status === "passed" ? "通过" : "发现问题，检测已拦截"}`);
+          if (data.review_status === "pending") {
+            renderBadge(aiEl.wrap, "guard-bad", "已提交人工复核（本次为 AI 草稿）");
+          }
+          if (data.report_status) {
+            renderBadge(aiEl.wrap, "mock", `报告草稿：${data.report_status}`);
+          }
+          break;
+        case "error":
+          clearStatusBubble(aiEl.wrap);
+          renderMsgFlag(aiEl.wrap, "failed", data.message);
+          break;
+      }
+    });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      clearStatusBubble(aiEl.wrap);
+      renderMsgFlag(aiEl.wrap, "interrupted");
+    } else {
+      clearStatusBubble(aiEl.wrap);
+      renderMsgFlag(aiEl.wrap, "failed",
+        httpError ? httpError.message : (streamOk ? "连接中断" : "网络异常"));
+      if (!streamOk) showBanner(true);
+    }
+  } finally {
+    state.generating = false;
+    setBusy(false);
+    state.abortCtrl = null;
+    if (!gotDone && aiEl.bubble.innerHTML === "") aiEl.wrap.remove();
+    loadSessions();
+    scrollBottom();
+  }
+}
+
 /** done 事件收尾：定稿渲染（完整 Markdown + 引用卡片 + 角标） */
 function finishAssistant(aiEl, mode, citations, doneData) {
   // 重新整体渲染（流式期间是行内追加，最终统一格式化一次）
@@ -582,6 +763,22 @@ function buildAnomalyItem(a) {
     els.input.focus();
   });
   item.appendChild(btn);
+
+  // 阶段6：异常面板直达 Agent 通道（工具调用 + 门禁 + 轨迹可视化）
+  const agentBtn = document.createElement("button");
+  agentBtn.className = "btn-ai agent";
+  agentBtn.textContent = "Agent 深度分析";
+  agentBtn.title = "进入 Agent 循环：取数 → 查配置 → 校验 → 检索 → 报告草稿 → 人工复核";
+  agentBtn.addEventListener("click", () => {
+    if (state.generating) return;
+    closeAnomalyPanel();
+    state.lastAnomalyId = a.anomaly_id;
+    setModeTag("agent");
+    const q = `请分析异常事件 ${a.anomaly_id}（${a.anomaly_type}）：`
+      + "给出可能原因、知识依据与建议核查事项。";
+    sendAgentQuestion(q, a.anomaly_id);
+  });
+  item.appendChild(agentBtn);
   return item;
 }
 

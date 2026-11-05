@@ -119,6 +119,21 @@ async def logs_page(request: Request,
     })
 
 
+@router.get("/agent-tasks", response_class=HTMLResponse)
+async def agent_tasks_page(request: Request,
+                           user: User | None = Depends(get_current_user_optional)):
+    """Agent 任务账本页（阶段6）：状态机快照 + 工具调用轨迹，用于排查执行过程。"""
+    if user is None:
+        return RedirectResponse("/login?next=/admin/agent-tasks", status_code=302)
+    if "audit:conversation:read" not in await _permission_codes(request, user):
+        return _forbidden(user, "audit:conversation:read")
+
+    request.state.user = user
+    return _templates.TemplateResponse(request, "agent_tasks.html", {
+        "username": user.username, "nav": "agent_tasks",
+    })
+
+
 @router.get("/kb", response_class=HTMLResponse)
 async def kb_page(request: Request,
                   user: User | None = Depends(get_current_user_optional)):

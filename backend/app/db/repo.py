@@ -1290,3 +1290,33 @@ async def get_agent_task_detail(db: AsyncSession, task_id: str) -> dict[str, Any
             for c in calls
         ],
     }
+
+
+async def list_agent_tasks(db: AsyncSession, user_id: int | None = None,
+                           limit: int = 50) -> list[dict[str, Any]]:
+    """Agent 任务列表（管理页用）。user_id 非空时只看本人任务。"""
+    from app.db.models import AgentTask, User
+
+    stmt = (select(AgentTask, User.username)
+            .outerjoin(User, User.id == AgentTask.user_id)
+            .order_by(AgentTask.created_at.desc()).limit(limit))
+    if user_id is not None:
+        stmt = stmt.where(AgentTask.user_id == user_id)
+    rows = (await db.execute(stmt)).all()
+    return [
+        {
+            "task_id": t.task_id, "session_id": t.session_id,
+            "username": uname or "系统", "user_id": t.user_id,
+            "intent": t.intent, "status": t.status,
+            "current_step": t.current_step,
+            "validation_status": t.validation_status,
+            "anomaly_status": t.anomaly_status,
+            "review_status": t.review_status,
+            "report_status": t.report_status,
+            "review_required": t.review_required,
+            "tool_call_count": t.tool_call_count,
+            "evidence_count": len(t.evidence_refs or []),
+            "created_at": t.created_at.isoformat(),
+        }
+        for t, uname in rows
+    ]
