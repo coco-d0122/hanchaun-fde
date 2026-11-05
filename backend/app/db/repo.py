@@ -1141,6 +1141,7 @@ ACTION_LABELS: dict[str, str] = {
     "flag_update": "风险标记",
     "anomaly_review": "异常复核",
     "agent_analysis": "Agent 分析",
+    "review_request": "复核请求",
 }
 
 
@@ -1427,3 +1428,53 @@ async def update_agent_draft(db: AsyncSession, draft_id: str, status: str,
     await db.execute(update(AgentReportDraft)
                      .where(AgentReportDraft.draft_id == draft_id)
                      .values(**values))
+
+
+# ============================== 报告草稿确认（阶段7 第二批） ==============================
+
+async def get_draft_by_idempotency_key(db: AsyncSession, key: str) -> Any | None:
+    """幂等键查重：同一 key 只能产生一次确认/取消结果。"""
+    from app.db.models import AgentReportDraft
+
+    return (await db.execute(
+        select(AgentReportDraft)
+        .where(AgentReportDraft.idempotency_key == key))).scalar_one_or_none()
+
+
+async def confirm_agent_draft_cas(db: AsyncSession, draft_id: str,
+                                  idempotency_key: str,
+                                  review_request_id: str) -> bool:
+    """CAS 更新：只有 status=pending 的行能被确认，防并发重复建单。"""
+    from app.db.models import AgentReportDraft
+
+    result = await db.execute(
+        update(AgentReportDraft)
+        .where(AgentReportDraft.draft_id == draft_id,
+               AgentReportDraft.status == "pending")
+        .values(status="confirmed", idempotency_key=idempotency_key,
+                review_request_id=review_request_id,
+                decided_at=datetime.utcnow()))
+    return bool(result.rowcount)
+
+
+async def cancel_agent_draft_cas(db: AsyncSession, draft_id: str,
+                                 idempotency_key: str) -> bool:
+    from app.db.models import AgentReportDraft
+
+    result = await db.execute(
+        update(AgentReportDraft)
+        .where(AgentReportDraft.draft_id == draft_id,
+               AgentReportDraft.status == "pending")
+        .values(status="cancelled", idempotency_key=idempotency_key,
+                decided_at=datetime.utcnow()))
+    return bool(result.rowcount)
+
+
+async def set_draft_risk_request(db: AsyncSession, draft_id: str,
+                                 review_request_id: str) -> None:
+    """取消提交但强制复核风险独立保留时，把风险请求号挂到草稿上。"""
+    from app.db.models import AgentReportDraft
+
+    await db.execute(update(AgentReportDraft)
+                     .where(AgentReportDraft.draft_id == draft_id)
+                     .values(review_request_id=review_request_id))

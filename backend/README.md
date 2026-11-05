@@ -64,6 +64,9 @@ INIT_PASSWORD='用户密码'  .venv/Scripts/python -m app.init_admin --username 
 | POST | `/api/agent/analyze` | Agent 分析（SSE：task/status/tool_result/token/citations/done） |
 | GET | `/api/agent/tasks` | Agent 任务列表（有审计权限看全库，否则只看本人） |
 | GET | `/api/agent/logs` | Harness 执行日志（用户/时间/任务/工具/轮次/状态组合筛选） |
+| POST | `/api/agent/drafts/{id}/confirm` | 确认提交人工复核（二次校验 + 幂等） |
+| POST | `/api/agent/drafts/{id}/cancel` | 取消提交（强制复核风险独立保留） |
+| GET | `/api/agent/drafts/{id}` | 草稿状态查询 |
 | GET | `/api/agent/tasks/{id}` | Agent 任务账本 + 调用轨迹 |
 | GET | `/api/health` | 健康检查（知识库 / LLM 状态） |
 | GET | `/login` + `/` | 登录页 + 聊天页（未登录 302 跳登录） |
@@ -269,6 +272,17 @@ cd backend && ../.venv/Scripts/python scripts/agent_selftest.py
 - 自测：`scripts/harness_selftest.py`（25 项全通过）；阶段6 `scripts/agent_selftest.py` 16 项回归通过。
 - 选型说明、架构图、目录结构、SQLAlchemy 模型与默认假设见仓库根目录
   《瀚川工业园_阶段7_Harness执行循环设计说明_v1.0.md》。
+
+## 报告草稿与人工确认（阶段7 第二批）
+
+- `POST /api/agent/analyze` 带 `require_confirmation=true` 时：报告草稿经 SSE `token` 流式下发，
+  末尾发 `draft_ready` 并**暂停**，不在循环内自动创建复核请求。
+- 前端渲染草稿卡片与「确认提交人工复核 / 取消」按钮；确认时携带 `idempotency_key` 与
+  `report_version`，后端二次校验身份、权限、报告版本、证据 hash，通过后调用 `request_human_review`。
+- 重复确认不重复建单（唯一幂等键 + `status=pending` CAS）；取消不执行普通提交，
+  但强制复核风险（版本冲突/关键数据缺失/电气安全风险）由后端**独立保留**风险复核请求。
+- **确认提交 ≠ 确认异常原因 ≠ 签核**：不写 `review_records`，不改异常状态到 confirmed/closed。
+- 自测：`scripts/confirmation_selftest.py`（19 项全通过）；回归 Harness 25 项 + 阶段6 16 项。
 
 ## 边界声明（当前明确不做）
 

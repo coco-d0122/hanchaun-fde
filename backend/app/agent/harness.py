@@ -53,7 +53,8 @@ class HarnessRunner(AgentRunner):
     def __init__(self, question: str, anomaly_id: str | None, session_id: str | None,
                  cfg: Settings, retriever: HybridRetriever | None,
                  user_id: int | None, permissions: list[str],
-                 should_stop: Callable[[], Any] | None = None):
+                 should_stop: Callable[[], Any] | None = None,
+                 require_confirmation: bool = False):
         super().__init__(question, anomaly_id, session_id, cfg, retriever,
                          user_id, permissions)
         self.should_stop = should_stop
@@ -67,6 +68,9 @@ class HarnessRunner(AgentRunner):
         self.messages: list[dict] = []
         self.intent = self._classify(question)
         self.state.intent = self.intent
+        # 人工确认模式：报告草稿经 SSE 下发后暂停，不在循环内自动创建复核请求
+        self.require_confirmation = require_confirmation
+        self.last_report: dict | None = None
 
     # ---------------- 场景分类（离线规划器用；真实 LLM 时由模型自行判断）----------------
     @staticmethod
@@ -207,7 +211,8 @@ class HarnessRunner(AgentRunner):
                                                "top_k": 3}})
             return calls
         if r == 5 and self.state.review_required \
-                and self.state.review_status != "pending":
+                and self.state.review_status != "pending" \
+                and not self.require_confirmation:
             reason = "multiplier_anomaly" if self.state.validation_status == "issues_found" \
                 else "final_confirmation"
             return [{"name": "request_human_review",
@@ -275,6 +280,8 @@ class HarnessRunner(AgentRunner):
                     json.dumps(self._safe_params(clean), ensure_ascii=False)[:512],
                     summary[:1024], result.ok, result.error_code,
                     result.duration_ms)
+        if result.ok and tool == "generate_anomaly_report":
+            self.last_report = result.payload
         if result.ok:
             self.completed_tools.add(tool)
             async with session_factory() as db:
@@ -449,5 +456,6 @@ class HarnessRunner(AgentRunner):
             "llm_mode": "llm" if (self.cfg.llm_api_key and not self.llm_failed)
                         else "offline_planner",
             "unfinished_reason": self.unfinished_reason or None,
+            "require_confirmation": self.require_confirmation,
         }
         yield _sse("done", done)

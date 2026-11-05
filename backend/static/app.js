@@ -605,6 +605,7 @@ async function sendAgentQuestion(question, anomalyIdOverride) {
         session_id: state.sessionId,
         question,
         anomaly_id: anomalyId,
+        require_confirmation: true,   // 报告草稿流式下发后暂停，等待用户明确确认
       }),
       signal: state.abortCtrl.signal,
     });
@@ -662,6 +663,9 @@ async function sendAgentQuestion(question, anomalyIdOverride) {
             renderBadge(aiEl.wrap, "mock", `报告草稿：${data.report_status}`);
           }
           break;
+        case "draft_ready":
+          renderDraftCard(aiEl.wrap, data);
+          break;
         case "error":
           clearStatusBubble(aiEl.wrap);
           renderMsgFlag(aiEl.wrap, "failed", data.message);
@@ -686,6 +690,65 @@ async function sendAgentQuestion(question, anomalyIdOverride) {
     loadSessions();
     scrollBottom();
   }
+}
+
+/** 阶段7：报告草稿人工确认卡片（确认≠签核；取消时强制复核风险独立保留） */
+function renderDraftCard(wrap, d) {
+  const box = document.createElement("div");
+  box.className = "draft-card";
+  const key = (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID() : `idem-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  box.innerHTML =
+    `<div class="draft-title">📝 异常分析报告草稿（等待人工确认）</div>` +
+    `<div class="draft-meta">草稿 ${escapeHtml(d.draft_id)} · 版本 v${d.report_version} · `
+    + `证据 ${d.evidence_count} 条${d.force_review ? ' · <b>存在强制复核风险</b>' : ''}</div>` +
+    `<div class="draft-note">${escapeHtml(d.note || '')}</div>` +
+    `<div class="draft-actions">` +
+    `<button class="btn-draft confirm">确认提交人工复核</button>` +
+    `<button class="btn-draft cancel">取消</button>` +
+    `</div><div class="draft-result"></div>`;
+
+  const confirmBtn = box.querySelector(".confirm");
+  const cancelBtn = box.querySelector(".cancel");
+  const result = box.querySelector(".draft-result");
+
+  async function decide(action) {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;      // 一次点击即锁定，防重复确认重复建单
+    result.textContent = "正在提交…";
+    const endpoint = `/api/agent/drafts/${encodeURIComponent(d.draft_id)}/${action}`;
+    try {
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json",
+                   "X-Requested-With": "XMLHttpRequest" },
+        body: JSON.stringify({ idempotency_key: key, report_version: d.report_version }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        result.className = "draft-result err";
+        result.textContent = data.message || "操作失败";
+        confirmBtn.disabled = false;
+        cancelBtn.disabled = false;
+        return;
+      }
+      result.className = "draft-result ok";
+      result.textContent = data.message
+        + (data.review_request_id ? `（复核请求：${data.review_request_id}）` : "");
+      if (data.risk_retained) {
+        result.textContent += `　⚠ 风险复核已独立保留：${data.risk_request_id}`;
+      }
+    } catch (e) {
+      result.className = "draft-result err";
+      result.textContent = "网络异常，请重试";
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  }
+  confirmBtn.addEventListener("click", () => decide("confirm"));
+  cancelBtn.addEventListener("click", () => decide("cancel"));
+  wrap.appendChild(box);
+  scrollBottom();
 }
 
 /** done 事件收尾：定稿渲染（完整 Markdown + 引用卡片 + 角标） */

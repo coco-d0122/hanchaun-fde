@@ -464,6 +464,29 @@ body {
 .ap-item .btn-ai.agent { background: #1e40af; margin-top: 6px; }
 .ap-item .btn-ai.agent:hover { opacity: .88; }
 
+/* ---------------- 阶段7：报告草稿人工确认 ---------------- */
+.draft-card {
+  border: 1px solid #f0d9a8;
+  background: #fffcf4;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+.draft-title { font-weight: 600; color: #7a5300; }
+.draft-meta { color: var(--text-2); font-size: 12px; margin: 4px 0 6px; }
+.draft-note { color: #7a5300; font-size: 12px; line-height: 1.7; }
+.draft-actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.btn-draft {
+  border: 1px solid var(--border); background: #fff; color: var(--text);
+  padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
+}
+.btn-draft.confirm { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn-draft:disabled { opacity: .5; cursor: not-allowed; }
+.draft-result { font-size: 12.5px; margin-top: 8px; line-height: 1.7; }
+.draft-result.ok { color: var(--ok, #16a34a); }
+.draft-result.err { color: var(--danger); }
+
 /* ---------------- 滚动条 ---------------- */
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: #d4dae2; border-radius: 4px; }

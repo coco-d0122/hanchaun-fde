@@ -555,7 +555,8 @@ def generate_anomaly_report(ctx: AgentContext, anomaly_id: str | None = None,
             "NUMBER_TRACE_FAILED",
             f"报告正文数值无法在证据中找到来源：{trace['unmatched'][:5]}，已退回")
 
-    report_id = f"RPT-{datetime.now():%Y%m%d%H%M%S}"
+    from uuid import uuid4
+    report_id = f"RPT-{datetime.now():%Y%m%d%H%M%S}-{uuid4().hex[:4]}"
     ctx.add_evidence("report", report_id, f"报告草稿 {status}，证据 {len(evidence)} 条")
     return {
         "report_id": report_id,
@@ -591,7 +592,8 @@ def request_human_review(ctx: AgentContext, reason: str | None = None,
     if not used:
         used = ctx.evidence_ids()[-3:]
 
-    request_id = f"HR-{datetime.now():%Y%m%d%H%M%S}"
+    from uuid import uuid4
+    request_id = f"HR-{datetime.now():%Y%m%d%H%M%S}-{uuid4().hex[:4]}"
     ctx.add_evidence("review_request", request_id,
                      f"复核请求：{REVIEW_REASON_LABEL.get(reason, reason)}，证据 {len(used)} 条")
     return {

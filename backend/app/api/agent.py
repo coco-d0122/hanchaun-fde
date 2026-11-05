@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.agent import confirmation
 from app.agent.harness import HarnessRunner
 from app.agent.loop import AgentRunner
 from app.api.deps import (get_current_user, get_permission_cache, require_csrf_header,
@@ -40,6 +41,8 @@ class AgentRequest(BaseModel):
     session_id: str | None = Field(None, max_length=36)
     # engine=harness（默认）：阶段7 的 5 轮 Harness；script：阶段6 确定性剧本（回归对照）
     engine: Literal["harness", "script"] = "harness"
+    # true：报告草稿经 SSE 下发后暂停，等待用户明确确认/取消（人工确认机制）
+    require_confirmation: bool = False
 
 
 def _sse(event: str, data: dict) -> str:
@@ -77,7 +80,8 @@ async def analyze(req: AgentRequest, request: Request,
     runner_cls = HarnessRunner if req.engine == "harness" else AgentRunner
     runner = runner_cls(req.question, req.anomaly_id, session_id, cfg, retriever,
                         user.id, permissions,
-                        **({"should_stop": request.is_disconnected}
+                        **({"should_stop": request.is_disconnected,
+                            "require_confirmation": req.require_confirmation}
                            if req.engine == "harness" else {}))
     prompt_version_id, _ = await get_system_prompt("agent")
 
@@ -103,8 +107,31 @@ async def analyze(req: AgentRequest, request: Request,
                                  "message": f"分析任务执行失败：{exc}", "details": None})
             return
 
-        # ---- 落库：assistant 消息 + 引用（证据链与阶段4/5 对齐）----
         content = "".join(answer_parts)
+        # ---- 人工确认模式：草稿已随 token 流式下发，这里落账本并暂停 Agent ----
+        if req.require_confirmation and req.engine == "harness" \
+                and getattr(runner, "last_report", None) is not None:
+            try:
+                draft = await confirmation.create_draft(cfg, runner, content, user.id)
+            except Exception as exc:  # noqa: BLE001  草稿建不了则明确报错，不静默提交
+                logger.exception("创建报告草稿失败")
+                yield _sse("error", {"code": "DRAFT_CREATE_FAILED",
+                                     "message": f"报告草稿创建失败：{exc}", "details": None})
+                return
+            yield _sse("draft_ready", {
+                **draft,
+                "actions": [
+                    {"action": "confirm", "label": "确认提交人工复核",
+                     "endpoint": f"/api/agent/drafts/{draft['draft_id']}/confirm"},
+                    {"action": "cancel", "label": "取消",
+                     "endpoint": f"/api/agent/drafts/{draft['draft_id']}/cancel"},
+                ],
+                "note": ("确认仅代表请求人工复核，不等于确认异常原因，"
+                         "也不等于电气安全主管完成签核"),
+                "paused": True,
+            })
+
+        # ---- 落库：assistant 消息 + 引用（证据链与阶段4/5 对齐）----
         citations = [{"source_type": e["source_type"], "source_file": e["source_file"],
                       "chunk_id": e["id"], "excerpt": e["excerpt"][:120]}
                      for e in runner.ctx.evidence
@@ -190,3 +217,54 @@ async def list_execution_logs(
                 date_from=date_from, date_to=date_to, limit=limit, offset=offset)
     data["scope"] = "all" if can_audit else "own"
     return data
+
+
+class DraftDecision(BaseModel):
+    """确认/取消请求体。idempotency_key 由前端生成并复用，防重复确认重复建单。"""
+    idempotency_key: str = Field(..., min_length=8, max_length=64)
+    report_version: int | None = Field(None, ge=1)
+
+
+def _user_permissions(request: Request, user: User) -> list[str]:
+    return sorted({p for r in user.roles
+                   for p in get_permission_cache(request).get(r.code, [])})
+
+
+@router.post("/drafts/{draft_id}/confirm", dependencies=[Depends(require_csrf_header)])
+async def confirm_draft(draft_id: str, body: DraftDecision, request: Request,
+                        user: Annotated[User, Depends(get_current_user)]) -> dict:
+    """用户确认 → 二次校验（身份/权限/报告版本/证据有效性）→ 创建人工复核请求。"""
+    return await confirmation.confirm_draft(
+        get_settings(), draft_id, user.id, _user_permissions(request, user),
+        body.idempotency_key, body.report_version or 1)
+
+
+@router.post("/drafts/{draft_id}/cancel", dependencies=[Depends(require_csrf_header)])
+async def cancel_draft(draft_id: str, body: DraftDecision, request: Request,
+                       user: Annotated[User, Depends(get_current_user)]) -> dict:
+    """用户取消 → 不执行普通提交；强制复核风险独立保留。"""
+    return await confirmation.cancel_draft(
+        get_settings(), draft_id, user.id, _user_permissions(request, user),
+        body.idempotency_key)
+
+
+@router.get("/drafts/{draft_id}")
+async def get_draft(draft_id: str,
+                    user: Annotated[User, Depends(get_current_user)]) -> dict:
+    """草稿状态查询（本人可见；管理页可按 draft_id 追溯）。"""
+    async with session_factory() as db:
+        async with db.begin():
+            draft = await repo.get_agent_draft(db, draft_id)
+    if draft is None or (draft.user_id is not None and draft.user_id != user.id):
+        raise AppError("DRAFT_NOT_FOUND", "报告草稿不存在", 404)
+    return {
+        "draft_id": draft.draft_id, "task_id": draft.task_id,
+        "session_id": draft.session_id, "status": draft.status,
+        "report_version": draft.report_version,
+        "evidence_hash": draft.evidence_hash,
+        "force_review": draft.force_review, "force_reason": draft.force_reason,
+        "review_request_id": draft.review_request_id,
+        "created_at": draft.created_at.isoformat(),
+        "decided_at": draft.decided_at.isoformat() if draft.decided_at else None,
+        "content_chars": len(draft.content or ""),
+    }

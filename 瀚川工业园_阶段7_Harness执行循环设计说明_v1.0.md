@@ -1,8 +1,8 @@
 # 瀚川工业园 · 阶段7 Agent Harness 执行循环设计说明 v1.0（第一批）
 
 > 日期：2026-11-06　基线：`aea5cfe`（阶段6 收口）
-> 本批范围：**Harness 执行循环 + 工具依赖校验 + 执行日志**（用户指定的优先级）
-> 运行：`cd backend && ../.venv/Scripts/python scripts/harness_selftest.py`（25 项断言全通过）
+> 范围：**第一批** Harness 循环/依赖/日志；**第二批** SSE 报告草稿与人工确认
+> 运行：`harness_selftest.py`（25 项）+ `confirmation_selftest.py`（19 项）+ `agent_selftest.py`（16 项回归）
 
 ---
 
@@ -197,10 +197,67 @@ decision_round / status` 组合筛选 + 分页；有 `audit:conversation:read` �
 
 ---
 
-## 九、剩余事项（后续批次）
+## 九、第二批：报告草稿 SSE 与人工确认机制
 
-- **第二批**：`generate_anomaly_report` 草稿经 SSE 流式下发 → 暂停 → 前端"确认提交人工复核 / 取消"
-  → 后端二次校验（身份/权限/报告版本/证据有效性）→ `request_human_review`；
-  幂等键防重复确认；强制复核风险在用户取消时独立保留。
-- **第三批**：场景 A/B/C 完整联调轨迹、前端确认按钮、验收文档与运行说明、全量回归与推送。
-- **明确不做**（沿用阶段6 边界）：LangGraph / 多 Agent / scope 收紧 / 真实 LLM 下自主规划复测。
+### 9.1 事件协议（在阶段6 SSE 之上扩展）
+
+```
+task → round → status/tool_result×(N) → token×(N)  ← 报告草稿正文流式下发
+     → citations → done → draft_ready               ← 暂停点，Agent 不再自动提交
+```
+
+`draft_ready` 携带：`draft_id / task_id / report_version / evidence_hash / evidence_count /
+force_review / force_reason / actions[confirm,cancel] / note / paused=true`。
+前端收到后渲染草稿卡片与「确认提交人工复核 / 取消」按钮，点击后走独立 HTTP 请求。
+
+### 9.2 确认流程（服务端二次校验）
+
+| 步骤 | 校验 |
+|---|---|
+| 身份 | `draft.user_id == 当前登录用户`，不匹配按 404 处理（不泄露存在性） |
+| 权限 | 权限码 `anomaly:read`；CSRF 头 `X-Requested-With` |
+| 报告版本 | 请求 `report_version` 必须等于草稿版本，否则 409 `DRAFT_VERSION_MISMATCH` |
+| 证据有效性 | 重算 `agent_tasks.evidence_refs` 的 hash，与草稿 `evidence_hash` 比对，不一致 409 `EVIDENCE_INVALID` |
+| 幂等 | `idempotency_key` 唯一 + `UPDATE ... WHERE status='pending'` CAS；重复确认直接返回既有 `review_request_id` |
+| 动作 | 调用 `request_human_review`（只增不改），返回复核请求编号 |
+
+### 9.3 取消流程
+
+- `report_submitted=false`，**不执行普通报告提交操作**；
+- 但 `force_review=true`（版本冲突 / 关键数据缺失 / 电气安全风险等）时，
+  后端**独立创建风险复核请求**并挂到草稿上（`risk_retained=true`），用户取消无法抹掉风险；
+- 重复取消幂等（CAS + 幂等键）。
+
+### 9.4 边界声明
+
+**用户确认提交报告 ≠ 确认异常原因 ≠ 电气安全主管完成签核**：
+确认只写 `agent_report_drafts.status=confirmed` + 一条 `review_request` 审计，
+不写 `review_records`（签核结论表）、不改 `anomaly_events.status` 到 confirmed/closed。
+自测已断言这两点（`review_records=0`、异常状态仍 pending_analysis/pending_review）。
+
+### 9.5 新增接口与文件
+
+| 类别 | 位置 |
+|---|---|
+| 服务 | `app/agent/confirmation.py`（草稿创建、二次校验、幂等、风险独立保留） |
+| 表 | `agent_report_drafts`（`AgentReportDraft`，含 `idempotency_key` 唯一约束） |
+| API | `POST /api/agent/drafts/{id}/confirm`、`POST .../{id}/cancel`、`GET .../{id}` |
+| 请求体 | `AgentRequest.require_confirmation`（仅当生成了报告时建草稿；知识问答/倍率问答不建） |
+| 前端 | `static/app.js::renderDraftCard()` + `static/app.css .draft-card` |
+| 测试 | `scripts/confirmation_selftest.py`（19 项全通过） |
+
+### 9.6 第二批验收（19 项全通过）
+
+草稿流式下发 18 段 token；暂停期间无 `request_human_review`；版本不一致 / 缺 CSRF /
+他人确认 / 证据被篡改均被拒；确认返回复核请求号；同键与不同键重复确认都不重复建单；
+确认不改异常状态、不写签核表；取消不提交普通报告但强制复核风险独立保留；重复取消幂等。
+回归：Harness 25 项、阶段6 16 项、`node --check` 全通过。
+
+---
+
+## 十、剩余事项
+
+- **第三批**：场景 A/B/C 完整联调轨迹与断言、前端确认按钮端到端验证、
+  最终运行说明文档（10 项交付清单汇总）、全量回归与推送。
+- **明确不做**（沿用阶段6 边界）：LangGraph / 多 Agent / scope 收紧 /
+  真实 LLM 下自主规划复测（当前只验证离线规划器路径）。
