@@ -126,6 +126,55 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class KnowledgeDocument(Base):
+    """知识库文档主档 knowledge_documents（阶段5第二批）。
+
+    status 状态机：
+      processing → published（正常）
+                ↘ failed（解析/向量化失败，可重新处理）
+                ↘ needs_ocr（PDF 无文本层，需 OCR 后重新上传）
+      published → deleted（软删：检索内容已移除，行保留供审计）
+    """
+
+    __tablename__ = "knowledge_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    filename: Mapped[str] = mapped_column(String(128))                # 展示文件名
+    doc_type: Mapped[str] = mapped_column(String(32), default="other")  # 6 类枚举
+    current_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="processing", index=True)
+    file_path: Mapped[str] = mapped_column(String(256))               # 原始文件相对 backend 的路径
+    error_info: Mapped[str] = mapped_column(Text, default="")
+    uploaded_by: Mapped[int | None] = mapped_column(Integer, nullable=True)  # FK users.id（内建文档为 NULL）
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    versions: Mapped[list["KnowledgeDocumentVersion"]] = relationship(
+        back_populates="document", order_by="KnowledgeDocumentVersion.version_no")
+
+
+class KnowledgeDocumentVersion(Base):
+    """知识库文档版本 knowledge_document_versions（阶段5第二批）。
+
+    每次上传/重处理生成新版本；同一文档版本号递增。
+    content_hash 用于幂等：内容未变时向量缓存可直接复用。
+    """
+
+    __tablename__ = "knowledge_document_versions"
+    __table_args__ = (Index("ix_kdv_doc_version", "document_id", "version_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(Integer,
+                                             ForeignKey("knowledge_documents.id"))
+    version_no: Mapped[int] = mapped_column(Integer, default=1)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    content_hash: Mapped[str] = mapped_column(String(32))             # 文件字节 SHA256[:16]
+    status: Mapped[str] = mapped_column(String(16), default="processing")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    document: Mapped[KnowledgeDocument] = relationship(back_populates="versions")
+
+
 class Conversation(Base):
     """会话表 conversations。阶段5第一批：增加 user_id 归属（用户隔离）。"""
 

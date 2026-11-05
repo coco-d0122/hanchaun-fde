@@ -1,7 +1,7 @@
-# 瀚川工业园 · Web 后端与聊天界面（阶段4 + 阶段5第一批）
+# 瀚川工业园 · Web 后端与聊天界面（阶段4 + 阶段5第一/二批）
 
 基于阶段3原型核心模块（检索 / 规则引擎 / Guardrail 原样迁移）构建的 FastAPI + SQLite + SSE 流式聊天系统，
-含登录鉴权与 RBAC 基础权限（阶段5第一批）。
+含登录鉴权与 RBAC 权限（第一批）、管理后台与知识库文档管理（第二批）。
 
 ## 运行
 
@@ -43,8 +43,14 @@ INIT_PASSWORD='用户密码'  .venv/Scripts/python -m app.init_admin --username 
 | GET | `/api/sessions/{id}/messages` | 会话消息（含引用） |
 | GET | `/api/anomalies` | 异常事件列表（`?status=` 过滤） |
 | GET | `/api/anomalies/{id}` | 异常事件详情（含证据） |
+| GET | `/api/kb/documents` | 知识库文档列表（`kb:read`） |
+| GET | `/api/kb/documents/{id}` | 文档详情 + 版本历史（`kb:read`） |
+| POST | `/api/kb/documents` | 上传文档（multipart：`file` + `doc_type`，`kb:write`） |
+| DELETE | `/api/kb/documents/{id}` | 软删除文档（`kb:delete`，内建文档 403 保护） |
+| POST | `/api/kb/documents/{id}/reprocess` | 重新处理（`kb:write`，内容未变时命中缓存秒级） |
 | GET | `/api/health` | 健康检查（知识库 / LLM 状态） |
 | GET | `/login` + `/` | 登录页 + 聊天页（未登录 302 跳登录） |
+| GET | `/admin` → `/admin/kb` | 管理后台（知识库管理页，未登录跳登录、无权限 403 页） |
 
 **鉴权规则**：所有业务接口需登录（未登录 401 中文错误）；权限不足 403；
 所有 POST/PATCH 写请求须带 `X-Requested-With: XMLHttpRequest` 头（CSRF 防线，
@@ -60,19 +66,23 @@ SSE 事件协议：`session → status(×N，与真实执行阶段对应) → to
 app/
 ├─ main.py              # FastAPI 实例 + lifespan（建表/自愈/落事件/建索引/权限缓存）
 ├─ init_admin.py        # CLI 建号工具（bcrypt 哈希，幂等，可交互可环境变量）
-├─ api/                 # auth / users / chat(SSE) / sessions / anomalies 路由
+├─ api/                 # auth / users / chat(SSE) / sessions / anomalies / kb / admin 路由
 ├─ api/deps.py          # get_current_user + require_permission + CSRF 校验
 ├─ core/security.py     # bcrypt 哈希 + JWT 签发校验（密钥从环境变量读）
 ├─ core/permissions.py  # 权限码常量与两角色默认授权表
 ├─ services/chat_service.py   # 双模式 SSE 编排（状态机式分步）
+├─ services/kb_service.py     # 知识库上传流水线 / 影子重建原子切换 / 种子化
+├─ templates/           # Jinja2 管理后台模板（admin_base.html / kb.html）
 ├─ core/                # 阶段3原样迁移的 11 个核心模块（config 改 pydantic-settings，
 │                       #   llm 加流式变体，prompts 加 history 参数，其余零改动）
 ├─ db/                  # SQLAlchemy 模型（五表 + users/roles/permissions/
-│                       #   user_roles/role_permissions/audit_logs）+ 仓储层
+│                       #   user_roles/role_permissions/audit_logs/knowledge_documents/
+│                       #   knowledge_document_versions）+ 仓储层
 ├─ schemas/             # Pydantic 请求/响应模型
 └─ errors.py            # 统一错误码 + 中文错误信息
 static/                 # login.html / index.html / app.css / app.js（原生 JS）
 knowledge_base/ data/   # 沿用阶段3的模拟知识库与电表数据
+uploads/                # 用户上传的原始文档（运行时生成，已 gitignore）
 ```
 
 ## 关键机制（对应《阶段4 接口与交互设计方案 v1.0》）
@@ -89,6 +99,24 @@ knowledge_base/ data/   # 沿用阶段3的模拟知识库与电表数据
    独立组装；引用表只存定位键 + 120 字摘录，不重复存知识库全文。
 5. **数值溯源**（anomaly 模式）：回答中每个数字必须能在证据集合中找到来源
    （容差 0.5%），结果随 `done` 事件返回并入库。
+6. **知识库影子重建 + 原子切换**（第二批）：上传/删除/重处理都在**全新的**检索器实例上
+   构建，任一步失败直接丢弃影子（线上问答零影响），全部成功后仅一行引用替换完成切换；
+   在途请求仍持有旧实例，互不干扰。切片与向量按 `doc_id + content_hash` 逐文档缓存，
+   传一篇新文档不必重算全部内建文档的向量（实测 0.2~0.3 秒）。
+7. **上传安全三道校验**：扩展名白名单（`.md/.pdf`）→ 大小上限（10MB）→ 文件头魔数
+   （改名冒充的 `.exe` 会因缺 `%PDF-` 头被拒）；PDF 无文本层置 `needs_ocr` 并给中文提示，
+   不做静默入库。上传原始文件落 `backend/uploads/doc{id}/v{n}/`（已 gitignore）。
+8. **知识库的唯一事实来源是数据库**：启动时把 `knowledge_base/` 下 6 份内建文档幂等
+   登记进 `knowledge_documents`，此后检索构建只认该表 `status=published` +
+   显式 include/exclude 的目标文档——避免"上传成功但检索不到""删除后仍在索引里"两类经典坑。
+
+## 管理后台（第二批）
+
+- 入口：<http://127.0.0.1:8000/admin/kb>（聊天页左下角也会对 `kb:read` 用户显示"管理后台"）。
+- 能力：文档列表（类型/版本/切片数/状态/上传人）、上传并发布、重新处理、软删除；
+  内建 6 份文档不可删除（`KB_BUILTIN_PROTECTED`）。
+- 页面路由与 API 的失败语义不同：**页面**未登录 302 带 `next` 回跳、无权限渲染 403 中文页；
+  **API** 统一 401/403 JSON。
 
 ## 边界声明（当前明确不做）
 

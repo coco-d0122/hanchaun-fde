@@ -21,6 +21,9 @@ backend/hanchuan.db-wal
 backend/hanchuan.db-shm
 backend/.jwt_secret
 
+# ---- 阶段5第二批：用户上传的原始文档（运行时数据，不入库）----
+backend/uploads/
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/

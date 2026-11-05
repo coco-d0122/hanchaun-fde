@@ -19,7 +19,8 @@ import numpy as np
 from app.core.bm25 import BM25Index, _bm25_doc_tokens
 from app.core.config import Settings
 from app.core.embedder import BaseEmbedder
-from app.core.loader import Chunk, load_markdown_chunks
+from app.core.loader import (Chunk, load_markdown_chunks, markdown_file_chunks,
+                             plain_text_chunks)
 from app.core.text import normalize_query, tokenize_zh
 from app.core.vector_store import VectorIndex
 
@@ -27,6 +28,21 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DocEntry:
+    """
+    一份"已发布"文档的检索输入（阶段5第二批）。
+
+    知识库不再直接扫目录，而是以 knowledge_documents 表中 status=published
+    的记录为准；file_path 指向原始文件（knowledge_base/ 内建或 uploads/ 上传），
+    display_name 是检索引用时展示的文件名。
+    """
+    doc_id: int
+    file_path: Path
+    display_name: str
+    content_hash: str        # 原始文件字节 SHA256 前 16 位（缓存复用与幂等重处理的依据）
 
 
 def rrf_fuse(rankings: list[list[int]], k: int = 60) -> dict[int, float]:
@@ -161,6 +177,111 @@ class HybridRetriever:
         self.bm25_index = BM25Index([_bm25_doc_tokens(c) for c in self.chunks])
         logger.info("命中索引缓存：%s 个文本块（向量后端：%s）",
                     len(self.chunks), self.vector_index.backend)
+
+    # ---------------- 构建入口 2：按文档构建（阶段5第二批） ----------------
+    def build_from_documents(self, entries: list[DocEntry]) -> None:
+        """
+        从文档档案列表构建检索器（上传/删除/重处理后的重建路径）。
+
+        与 build_or_load 的区别：内容来源从"扫目录"变为"DB 中的已发布文档清单"。
+        缓存粒度从"整库一个目录"细化到"每文档一个缓存文件"——
+        这让上传一篇新文档不必重算全部 6 篇内建文档的向量。
+
+        缓存键 = doc_id + content_hash：内容不变直接复用切片与向量
+        （"重新处理"幂等；改一个字则内容哈希变化，自然重算）。
+
+        ★ 影子构建语义：本方法在【新的 HybridRetriever 实例】上执行，
+          构建过程中任何一步抛异常，调用方直接丢弃该实例，
+          app.state.retriever 上的旧对象从未被触碰——线上问答不受影响。
+          全部成功后由调用方做唯一的引用替换（原子切换）。
+        """
+        t0 = time.perf_counter()
+        doc_cache_dir = self.cfg.cache_path / "docs"
+        doc_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        all_chunks: list[Chunk] = []
+        vec_list: list[np.ndarray] = []
+
+        for entry in entries:
+            chunks, vectors = self._load_doc_with_cache(doc_cache_dir, entry)
+            if not chunks:
+                logger.warning("文档 %s（#%s）切片为空，跳过", entry.display_name, entry.doc_id)
+                continue
+            all_chunks.extend(chunks)
+            vec_list.append(vectors)
+
+        if not all_chunks:
+            raise ValueError("知识库没有已发布文档，检索器拒绝构建为空索引")
+
+        # ---- 组装联合索引（FAISS + BM25）----
+        self.chunks = all_chunks
+        self._vectors = np.vstack(vec_list).astype("float32")
+        self.vector_index = VectorIndex()
+        self.vector_index.build(self._vectors)
+        self.bm25_index = BM25Index([_bm25_doc_tokens(c) for c in self.chunks])
+        logger.info("按文档构建索引完成：%s 份文档 / %s 个切片，耗时 %.2fs",
+                    len(entries), len(self.chunks), time.perf_counter() - t0)
+
+    def _load_doc_with_cache(self, cache_dir: Path,
+                             entry: DocEntry) -> tuple[list[Chunk], np.ndarray]:
+        """
+        单文档：命中缓存直接读，未命中则 解析→切片→向量化→写缓存。
+
+        缓存文件按 content_hash 命名，内容不可变 → 缓存文件写一半被中断也
+        只是留下一个不会被命中的坏文件（下次 hash 相同重新计算并覆盖），
+        不会污染正在服务的线上索引。
+        """
+        stem = Path(entry.display_name).stem
+        prefix = f"doc{entry.doc_id}_{entry.content_hash[:12]}"
+        chunks_file = cache_dir / f"{prefix}_chunks.json"
+        vectors_file = cache_dir / f"{prefix}_vectors.npy"
+
+        if chunks_file.exists() and vectors_file.exists():
+            try:
+                chunks = [Chunk(**d) for d in
+                          json.loads(chunks_file.read_text(encoding="utf-8"))]
+                vectors = np.load(vectors_file)
+                if len(chunks) == len(vectors):
+                    # 缓存里的 chunk_id 可能来自旧 display_name，重命名不影响检索，
+                    # 但引用展示要一致——直接按当前名称重建 id 与来源字段
+                    for i, c in enumerate(chunks, start=1):
+                        c.chunk_id = f"{stem}::c{i:03d}"
+                        c.source_file = entry.display_name
+                    return chunks, vectors
+                logger.warning("文档 %s 缓存维度不一致（%s 切片 vs %s 向量），重建",
+                               entry.display_name, len(chunks), len(vectors))
+            except Exception:  # noqa: BLE001  缓存损坏按未命中处理
+                logger.warning("文档 %s 缓存读取失败，重建", entry.display_name)
+
+        # ---- 未命中：解析 + 切片 + 向量化 ----
+        chunks = self._parse_and_chunk(entry)
+        if not chunks:
+            return [], np.zeros((0, self.embedder.dim if hasattr(self.embedder, "dim") else 64),
+                                dtype="float32")
+        texts = [c.index_text() for c in chunks]
+        vectors = self.embedder.encode(texts)
+
+        chunks_file.write_text(
+            json.dumps([asdict(c) for c in chunks], ensure_ascii=False, indent=1),
+            encoding="utf-8")
+        np.save(vectors_file, vectors.astype("float32"))
+        return chunks, vectors
+
+    def _parse_and_chunk(self, entry: DocEntry) -> list[Chunk]:
+        """按扩展名解析文档并切片。md 走标题路径切片；pdf 走纯文本切片。"""
+        suffix = entry.file_path.suffix.lower()
+        if suffix == ".md":
+            return markdown_file_chunks(entry.file_path, entry.display_name,
+                                        self.cfg.chunk_size, self.cfg.chunk_overlap)
+        if suffix == ".pdf":
+            from app.services.kb_service import extract_pdf_text   # 延迟导入避免环
+            text = extract_pdf_text(entry.file_path)
+            if not text.strip():
+                return []
+            return plain_text_chunks(text, entry.display_name,
+                                      Path(entry.display_name).stem,
+                                      self.cfg.chunk_size, self.cfg.chunk_overlap)
+        raise ValueError(f"不支持的文档类型：{suffix}")
 
     # ---------------- 检索 ----------------
     def retrieve(self, query: str, top_k: int | None = None) -> list[Retrieved]:

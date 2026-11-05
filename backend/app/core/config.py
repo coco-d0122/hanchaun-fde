@@ -86,6 +86,15 @@ class Settings(BaseSettings):
         return BACKEND_DIR / self.cache_dir
 
     @property
+    def uploads_path(self) -> Path:
+        """上传文档的原始文件存放根目录（阶段5第二批）。"""
+        return BACKEND_DIR / "uploads"
+
+    # ---- 阶段5第二批：知识库上传限制（D1/D2 默认值）----
+    kb_upload_max_mb: int = 10            # 单文件上限（MB）
+    kb_allowed_exts: list[str] = [".md", ".pdf"]   # 上传白名单
+
+    @property
     def normal_dataset(self) -> Path:
         return self.data_path / "meter_readings_normal.csv"
 

@@ -111,7 +111,10 @@
           showErr(data.message || "登录失败，请重试");
           return;
         }
-        location.href = "/";    // 登录成功，进入聊天页
+        // 回跳到来源页（仅接受站内绝对路径，防开放重定向）
+        const next = new URLSearchParams(location.search).get("next") || "";
+        const target = (next.startsWith("/") && !next.startsWith("//")) ? next : "/";
+        location.href = target;    // 登录成功
       } catch (e) {
         showErr("网络连接异常，请检查网络后重试");
       } finally {

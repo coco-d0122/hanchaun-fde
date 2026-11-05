@@ -99,10 +99,7 @@ def pack_paragraphs(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 def load_markdown_chunks(kb_dir: Path, chunk_size: int, overlap: int) -> list[Chunk]:
     """
-    加载知识库目录下所有 .md 文件并切片。
-
-    标题处理：维护一个标题栈，遇到新标题就更新路径；
-              这样每个切片都能带上"2 倍率管理 > 2.2 变更流程"这样的路径。
+    加载知识库目录下所有 .md 文件并切片（阶段3/4 的目录级入口，保留兼容）。
     """
     if not kb_dir.exists():
         raise FileNotFoundError(f"知识库目录不存在：{kb_dir}")
@@ -112,96 +109,160 @@ def load_markdown_chunks(kb_dir: Path, chunk_size: int, overlap: int) -> list[Ch
         raise FileNotFoundError(f"知识库目录下没有 .md 文件：{kb_dir}")
 
     all_chunks: list[Chunk] = []
-
     for md_path in md_files:
-        raw = md_path.read_text(encoding="utf-8", errors="replace")
         rel_name = md_path.relative_to(kb_dir).as_posix()
+        all_chunks.extend(markdown_file_chunks(md_path, rel_name, chunk_size, overlap))
+    return all_chunks
 
-        # --- 1) 按标题切分为"节"，同时记录每节在原文中的偏移 ---
-        lines = raw.splitlines()
-        sections: list[tuple[str, str, int]] = []   # (heading_path, body, char_offset)
-        stack: list[tuple[int, str]] = []
-        buf: list[str] = []
-        sec_start = 0
-        cursor = 0
 
-        def _flush() -> None:
-            body = "\n".join(buf).strip()
-            if body:
-                path = " > ".join(t for _, t in stack) if stack else md_path.stem
-                sections.append((path, body, sec_start))
+def markdown_file_chunks(md_path: Path, rel_name: str,
+                          chunk_size: int, overlap: int) -> list[Chunk]:
+    """
+    单个 Markdown 文件 → 切片（阶段5第二批：知识库管理按文档独立处理）。
 
-        for line in lines:
-            m = HEADING_RE.match(line)
-            if m:
-                _flush()
-                level = len(m.group(1))
-                title = m.group(2).strip()
-                while stack and stack[-1][0] >= level:
-                    stack.pop()
-                stack.append((level, title))
-                buf = []
-                sec_start = cursor + len(line) + 1
-            else:
-                # 跳过引用块（> 开头的行）。知识库文档顶部的"模拟规则"声明属于
-                # 文档元信息而非规则正文，若进入索引会被检索命中并当作依据返回，
-                # 既污染上下文又浪费 token。
-                if not line.lstrip().startswith(">"):
-                    buf.append(line)
-            cursor += len(line) + 1
-        _flush()
+    标题处理：维护一个标题栈，遇到新标题就更新路径；
+              这样每个切片都能带上"2 倍率管理 > 2.2 变更流程"这样的路径。
+    """
+    raw = md_path.read_text(encoding="utf-8", errors="replace")
 
-        # --- 2) 文档标题 = 第一个一级标题 ---
-        doc_title = md_path.stem
-        for path, _, _ in sections:
-            first = path.split(" > ")[0]
-            if first:
-                doc_title = first
-                break
+    # --- 1) 按标题切分为"节"，同时记录每节在原文中的偏移 ---
+    lines = raw.splitlines()
+    sections: list[tuple[str, str, int]] = []   # (heading_path, body, char_offset)
+    stack: list[tuple[int, str]] = []
+    buf: list[str] = []
+    sec_start = 0
+    cursor = 0
 
-        # --- 3) 把相邻小节点合并成接近 chunk_size 的切片 ---
-        # 为什么要合并：Markdown 的小节往往只有一两百字，若"一节=一块"，
-        # 切片过碎会让单个片段缺少上下文，既降低检索质量，也让大模型看到的依据残缺。
-        # 合并后每块约 500 字，通常覆盖 2~4 个相邻小节，语义更完整。
-        idx = 0
+    def _flush() -> None:
+        body = "\n".join(buf).strip()
+        if body:
+            path = " > ".join(t for _, t in stack) if stack else md_path.stem
+            sections.append((path, body, sec_start))
 
-        def _emit(path: str, text: str, offset: int) -> None:
-            nonlocal idx
-            idx += 1
-            all_chunks.append(Chunk(
-                chunk_id=f"{Path(rel_name).stem}::c{idx:03d}",
-                content=text.strip(),
-                source_file=rel_name,
-                doc_title=doc_title,
-                heading_path=path,
-                chunk_index=idx,
-                char_start=offset,
-                char_end=offset + len(text),
-            ))
+    for line in lines:
+        m = HEADING_RE.match(line)
+        if m:
+            _flush()
+            level = len(m.group(1))
+            title = m.group(2).strip()
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, title))
+            buf = []
+            sec_start = cursor + len(line) + 1
+        else:
+            # 跳过引用块（> 开头的行）。知识库文档顶部的"模拟规则"声明属于
+            # 文档元信息而非规则正文，若进入索引会被检索命中并当作依据返回，
+            # 既污染上下文又浪费 token。
+            if not line.lstrip().startswith(">"):
+                buf.append(line)
+        cursor += len(line) + 1
+    _flush()
 
-        buffer_text = ""
-        buffer_path = ""
-        buffer_offset = 0
+    # --- 2) 文档标题 = 第一个一级标题 ---
+    doc_title = md_path.stem
+    for path, _, _ in sections:
+        first = path.split(" > ")[0]
+        if first:
+            doc_title = first
+            break
 
-        for heading_path, body, offset in sections:
-            # 单节超长：先落盘当前缓冲，再对超长节单独按段落打包
-            if len(body) > chunk_size:
-                if buffer_text:
-                    _emit(buffer_path, buffer_text, buffer_offset)
-                    buffer_text, buffer_path = "", ""
-                for piece in pack_paragraphs(body, chunk_size, overlap):
-                    _emit(heading_path, piece, offset)
-                continue
+    return _sections_to_chunks(sections, rel_name, doc_title, md_path.stem,
+                               chunk_size, overlap)
 
-            if not buffer_text:
-                buffer_text, buffer_path, buffer_offset = body, heading_path, offset
-            elif len(buffer_text) + len(body) + 2 <= chunk_size:
-                buffer_text = f"{buffer_text}\n\n{body}"
-            else:
+
+def plain_text_chunks(text: str, source_name: str, doc_title: str,
+                      chunk_size: int, overlap: int) -> list[Chunk]:
+    """
+    无结构纯文本（PDF 文本层等）→ 切片（阶段5第二批）。
+
+    没有标题可用，heading_path 置空，直接按段落打包；
+    引用块过滤不适用（PDF 提取文本没有 Markdown 语法）。
+    """
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        return []
+
+    pieces: list[tuple[str, int]] = []   # (切片文本, 起始偏移)
+    offset = 0
+    for para in paragraphs:
+        for piece in _pieces_of_paragraph(para, chunk_size, overlap):
+            pieces.append((piece, offset))
+        offset += len(para) + 2
+
+    stem = Path(source_name).stem
+    return [
+        Chunk(
+            chunk_id=f"{stem}::c{i:03d}",
+            content=piece.strip(),
+            source_file=source_name,
+            doc_title=doc_title,
+            heading_path="",
+            chunk_index=i,
+            char_start=off,
+            char_end=off + len(piece),
+        )
+        for i, (piece, off) in enumerate(pieces, start=1)
+    ]
+
+
+def _pieces_of_paragraph(para: str, chunk_size: int, overlap: int) -> list[str]:
+    """单段落 → 0..N 个切片（超长硬切，否则整段）。"""
+    if len(para) > chunk_size:
+        return _split_long_paragraph(para, chunk_size, overlap)
+    return [para]
+
+
+def _sections_to_chunks(sections: list[tuple[str, str, int]], rel_name: str,
+                        doc_title: str, stem: str,
+                        chunk_size: int, overlap: int) -> list[Chunk]:
+    """
+    "节"列表 → 合并成接近 chunk_size 的切片（公共实现）。
+
+    为什么要合并：Markdown 的小节往往只有一两百字，若"一节=一块"，
+    切片过碎会让单个片段缺少上下文，既降低检索质量，也让大模型看到的依据残缺。
+    合并后每块约 500 字，通常覆盖 2~4 个相邻小节，语义更完整。
+    """
+    all_chunks: list[Chunk] = []
+    idx = 0
+
+    def _emit(path: str, text: str, offset: int) -> None:
+        nonlocal idx
+        idx += 1
+        all_chunks.append(Chunk(
+            chunk_id=f"{Path(rel_name).stem}::c{idx:03d}",
+            content=text.strip(),
+            source_file=rel_name,
+            doc_title=doc_title,
+            heading_path=path,
+            chunk_index=idx,
+            char_start=offset,
+            char_end=offset + len(text),
+        ))
+
+    buffer_text = ""
+    buffer_path = ""
+    buffer_offset = 0
+
+    for heading_path, body, offset in sections:
+        # 单节超长：先落盘当前缓冲，再对超长节单独按段落打包
+        if len(body) > chunk_size:
+            if buffer_text:
                 _emit(buffer_path, buffer_text, buffer_offset)
-                buffer_text, buffer_path, buffer_offset = body, heading_path, offset
+                buffer_text, buffer_path = "", ""
+            for piece in pack_paragraphs(body, chunk_size, overlap):
+                _emit(heading_path, piece, offset)
+            continue
 
-        if buffer_text:
-            _emit(buffer_path or md_path.stem, buffer_text, buffer_offset)
+        if not buffer_text:
+            buffer_text, buffer_path, buffer_offset = body, heading_path, offset
+        elif len(buffer_text) + len(body) + 2 <= chunk_size:
+            buffer_text = f"{buffer_text}\n\n{body}"
+        else:
+            _emit(buffer_path, buffer_text, buffer_offset)
+            buffer_text, buffer_path, buffer_offset = body, heading_path, offset
+
+    if buffer_text:
+        _emit(buffer_path or stem, buffer_text, buffer_offset)
 
     return all_chunks

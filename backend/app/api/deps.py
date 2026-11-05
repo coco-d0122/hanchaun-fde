@@ -86,19 +86,15 @@ def require_permission(code: str):
         user: Annotated[User, Depends(get_current_user)],
         request: Request,
     ) -> User:
-        cache = get_permission_cache(request)
-        if not cache:
+        mapping = get_permission_cache(request)
+        if not mapping:
             # 缓存缺失时退化为实时查库（防御性，正常不会发生）
             async with session_factory() as db:
                 async with db.begin():
-                    role_codes = await repo.get_user_role_codes(db, user)
                     mapping = await repo.list_role_permissions(db)
-            role_codes = [r for r in role_codes if r]
-        else:
-            role_codes = [r.code for r in user.roles]
 
-        for role_code in role_codes:
-            if code in cache.get(role_code, []):
+        for role in user.roles:
+            if code in mapping.get(role.code, []):
                 return user
         raise _forbidden()
 

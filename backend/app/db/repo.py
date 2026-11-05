@@ -15,13 +15,14 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.permissions import PERMISSIONS, ROLES, ROLE_PERMISSIONS
 from app.core.rules import AnomalyEvent, detect_all, load_readings, compute_intervals
 from app.db.models import (AnomalyEventRow, AnomalyEvidenceRow, AuditLog, Conversation,
+                            KnowledgeDocument, KnowledgeDocumentVersion,
                             Message, MessageCitation, Permission, Role, RolePermission,
                             User, UserRole)
 
@@ -491,3 +492,176 @@ def row_to_event(row: AnomalyEventRow) -> AnomalyEvent:
         suggestions=extra.get("suggestions", []),
         need_review=bool(extra.get("need_review", True)),
     )
+
+
+# ============================== 知识库管理（阶段5第二批） ==============================
+
+async def count_kb_documents(db: AsyncSession) -> int:
+    """知识库文档总数（判断种子是否已执行）。"""
+    return (await db.execute(select(func.count(KnowledgeDocument.id)))).scalar_one()
+
+
+async def get_kb_document(db: AsyncSession, doc_id: int) -> KnowledgeDocument | None:
+    return (await db.execute(
+        select(KnowledgeDocument).where(KnowledgeDocument.id == doc_id))).scalar_one_or_none()
+
+
+async def list_kb_documents(db: AsyncSession,
+                            include_deleted: bool = False) -> list[dict[str, Any]]:
+    """文档管理列表（按创建时间倒序），含版本号、切片数、上传人。"""
+    ver = KnowledgeDocumentVersion
+    user = User
+    stmt = (
+        select(
+            KnowledgeDocument.id,
+            KnowledgeDocument.filename,
+            KnowledgeDocument.doc_type,
+            KnowledgeDocument.status,
+            KnowledgeDocument.error_info,
+            KnowledgeDocument.created_at,
+            KnowledgeDocument.updated_at,
+            KnowledgeDocument.file_path,
+            ver.version_no,
+            ver.chunk_count,
+            ver.content_hash,
+            user.username.label("uploaded_by_name"),
+        )
+        .outerjoin(ver, ver.id == KnowledgeDocument.current_version_id)
+        .outerjoin(user, user.id == KnowledgeDocument.uploaded_by)
+        .order_by(KnowledgeDocument.id.desc())
+    )
+    if not include_deleted:
+        stmt = stmt.where(KnowledgeDocument.status != "deleted")
+    rows = (await db.execute(stmt)).all()
+    return [dict(r._mapping) for r in rows]
+
+
+async def list_published_kb_documents(db: AsyncSession) -> list[dict[str, Any]]:
+    """已发布文档清单（检索构建输入：id / filename / file_path / content_hash）。"""
+    return await list_kb_documents_for_build(db, [])
+
+
+async def list_kb_documents_for_build(
+        db: AsyncSession, include_ids: list[int] | None = None,
+        exclude_ids: list[int] | None = None) -> list[dict[str, Any]]:
+    """
+    检索构建用的文档清单 = 已发布文档 + 显式包含 − 显式排除。
+
+    ★ 为什么需要 include_ids：上传/重新处理时目标文档还是 processing 或 failed，
+      若只按 status=published 筛选，影子重建会把这份文档排除在外——
+      表现为"上传成功但检索不到、切片数为 0"。加上 include_ids 后，
+      构建时把它一并算进去，构建成功才真正发布；失败则整体丢弃影子。
+    ★ 为什么需要 exclude_ids：删除是"先重建再改状态"无法成立的场景——
+      文档此刻仍是 published，重建会把它又带进新索引，删了等于没删。
+      用排除集在不改状态的前提下先构建"已剔除"的影子，成功后再落 deleted。
+    """
+    ver = KnowledgeDocumentVersion
+    stmt = (
+        select(
+            KnowledgeDocument.id,
+            KnowledgeDocument.filename,
+            KnowledgeDocument.file_path,
+            ver.content_hash,
+        )
+        .outerjoin(ver, ver.id == KnowledgeDocument.current_version_id)
+        .order_by(KnowledgeDocument.id)
+    )
+    if include_ids:
+        stmt = stmt.where(
+            or_(KnowledgeDocument.status == "published",
+                KnowledgeDocument.id.in_(include_ids)))
+    else:
+        stmt = stmt.where(KnowledgeDocument.status == "published")
+    if exclude_ids:
+        stmt = stmt.where(KnowledgeDocument.id.not_in(exclude_ids))
+    rows = (await db.execute(stmt)).all()
+    return [dict(r._mapping) for r in rows]
+
+
+async def max_kb_version_no(db: AsyncSession, doc_id: int) -> int | None:
+    """该文档当前最大版本号（新上传文档返回 None）。"""
+    return (await db.execute(
+        select(func.max(KnowledgeDocumentVersion.version_no))
+        .where(KnowledgeDocumentVersion.document_id == doc_id))).scalar_one_or_none()
+
+
+async def set_kb_file_path(db: AsyncSession, doc_id: int, rel_path: str) -> None:
+    await db.execute(
+        update(KnowledgeDocument).where(KnowledgeDocument.id == doc_id)
+        .values(file_path=rel_path))
+
+
+async def set_kb_status(db: AsyncSession, doc_id: int, status: str,
+                        error_info: str = "") -> None:
+    """文档状态流转（processing/published/failed/needs_ocr/deleted）。"""
+    await db.execute(
+        update(KnowledgeDocument).where(KnowledgeDocument.id == doc_id)
+        .values(status=status, error_info=error_info))
+
+
+async def set_kb_version_published(db: AsyncSession, doc_id: int,
+                                   content_hash: str, chunk_count: int) -> None:
+    """当前版本置 published 并回填切片数与内容哈希。"""
+    ver = (
+        await db.execute(
+            select(KnowledgeDocumentVersion)
+            .where(KnowledgeDocumentVersion.id == (
+                select(KnowledgeDocument.current_version_id)
+                .where(KnowledgeDocument.id == doc_id).scalar_subquery())))
+    ).scalar_one_or_none()
+    if ver is not None:
+        ver.status = "published"
+        ver.chunk_count = chunk_count
+        ver.content_hash = content_hash
+
+
+async def update_version_chunk_counts(db: AsyncSession,
+                                      by_filename: dict[str, int]) -> int:
+    """构建后回填切片数（内建种子时记 0 的修正）。返回更新行数。"""
+    updated = 0
+    rows = (await db.execute(
+        select(KnowledgeDocument.id, KnowledgeDocument.filename,
+               KnowledgeDocument.current_version_id)
+        .where(KnowledgeDocument.status == "published"))).all()
+    for row in rows:
+        count = by_filename.get(row.filename)
+        if count is not None and row.current_version_id is not None:
+            await db.execute(
+                update(KnowledgeDocumentVersion)
+                .where(KnowledgeDocumentVersion.id == row.current_version_id)
+                .values(chunk_count=count))
+            updated += 1
+    return updated
+
+
+async def get_kb_document_detail(db: AsyncSession,
+                                 doc_id: int) -> dict[str, Any] | None:
+    """文档详情：基础信息 + 版本历史。"""
+    doc = await get_kb_document(db, doc_id)
+    if doc is None:
+        return None
+    versions = (await db.execute(
+        select(KnowledgeDocumentVersion)
+        .where(KnowledgeDocumentVersion.document_id == doc_id)
+        .order_by(KnowledgeDocumentVersion.version_no))).scalars().all()
+    return {
+        "id": doc.id,
+        "filename": doc.filename,
+        "doc_type": doc.doc_type,
+        "status": doc.status,
+        "error_info": doc.error_info,
+        "file_path": doc.file_path,
+        "created_at": doc.created_at,
+        "updated_at": doc.updated_at,
+        "versions": [
+            {
+                "id": v.id,
+                "version_no": v.version_no,
+                "chunk_count": v.chunk_count,
+                "content_hash": v.content_hash,
+                "status": v.status,
+                "created_at": v.created_at,
+            }
+            for v in versions
+        ],
+    }

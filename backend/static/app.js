@@ -641,8 +641,14 @@ async function loadCurrentUser() {
     const foot = document.querySelector(".side-foot");
     if (foot && me.username) {
       const roles = (me.roles || []).join("/") || "-";
+      // 管理后台入口只对拥有知识库读权限的角色显示（无权限时页面会 403，不制造死链）
+      const canAdmin = (me.permissions || []).includes("kb:read");
+      const adminLink = canAdmin
+        ? `<a href="/admin/kb" style="margin-left:8px;color:#1e6fff;">管理后台</a>`
+        : "";
       foot.innerHTML =
         `<span>${escapeHtml(me.username)}（${escapeHtml(roles)}）</span>` +
+        adminLink +
         `<a href="javascript:void(0)" id="btn-logout" style="margin-left:8px;color:#1e6fff;">退出</a>`;
       const logoutBtn = document.getElementById("btn-logout");
       logoutBtn && logoutBtn.addEventListener("click", async () => {

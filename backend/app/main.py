@@ -4,8 +4,9 @@ FastAPI 应用入口（阶段4）
 
 lifespan（方案 7.3 红线）：
   1. 建表 → 自愈悬挂消息 → 初始化异常事件（幂等）
-  2. 构建混合检索器（线程池，FAISS/BM25 一次构建挂 app.state，请求期只读）
-  3. 健康探测 LLM（可选降级）
+  2. 内建知识库文档种子化（knowledge_base/ → knowledge_documents，幂等）
+  3. 按 DB 已发布文档清单构建混合检索器（线程池，一次构建挂 app.state，请求期只读）
+  4. 健康探测 LLM（可选降级）
 
 日志脱敏：LLM_API_KEY 等敏感信息绝不进日志（logger 只记配置了"与否"，不记值）。
 """
@@ -23,7 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import anomalies, auth, chat, sessions, users
+from app.api import admin, anomalies, auth, chat, kb, sessions, users
 from app.core.config import get_settings
 from app.core.embedder import build_embedder
 from app.core.llm import call_llm
@@ -32,6 +33,7 @@ from app.db import repo
 from app.db.models import Base
 from app.db.session import engine, session_factory
 from app.errors import register_error_handlers
+from app.services import kb_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -84,10 +86,25 @@ async def lifespan(app: FastAPI):
             app.state.permission_cache = await repo.list_role_permissions(db)
     logger.info("角色/权限种子就绪：%s 个角色", len(app.state.permission_cache))
 
-    # ---- 2) 检索器构建（线程池：Embedding 可能分钟级，不能阻塞事件循环启动）----
-    retriever = await anyio.to_thread.run_sync(
-        lambda: _build_retriever(cfg))
-    app.state.retriever = retriever
+    # ---- 2) 内建知识库文档登记（幂等：表非空直接跳过）----
+    seeded_docs = await kb_service.seed_builtin_documents(cfg)
+    if seeded_docs:
+        logger.info("内建知识库文档登记：%s 份（来源 knowledge_base/）", seeded_docs)
+
+    # ---- 3) 检索器构建（线程池：Embedding 可能分钟级，不能阻塞事件循环启动）----
+    # 构建失败不阻断启动：管理后台仍可用（可上传文档修复），聊天接口按"知识库未就绪"降级。
+    try:
+        entries = await kb_service.load_doc_entries()
+        retriever = await anyio.to_thread.run_sync(
+            lambda: _build_retriever(cfg, entries))
+        app.state.retriever = retriever
+        await kb_service.backfill_chunk_counts(retriever)
+        logger.info("知识库就绪：%s 份文档 / %s 个切片（向量后端：%s）",
+                    len(entries), len(retriever.chunks),
+                    retriever.vector_index.backend)
+    except Exception as exc:  # noqa: BLE001
+        app.state.retriever = None
+        logger.exception("知识库索引构建失败，服务以降级模式启动：%s", exc)
     app.state.settings = cfg
 
     # ---- 3) LLM 健康探测（只记可用性，不记任何 Key）----
@@ -107,18 +124,23 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
-def _build_retriever(cfg) -> HybridRetriever:  # noqa: ANN001（Settings 循环导入风险，宽松标注）
-    """同步构建检索器（在线程池中执行）。"""
+def _build_retriever(cfg, entries: list) -> HybridRetriever:  # noqa: ANN001（Settings 循环导入风险，宽松标注）
+    """同步构建检索器（在线程池中执行）。
+
+    阶段5第二批起：内容来源是 DB 里 status=published 的文档清单，
+    而不是直接扫 knowledge_base/ 目录——上传/删除/重处理都只改 DB，
+    构建入口保持唯一（重建时由 kb_service.rebuild_retriever 复用同一逻辑）。
+    """
     embedder = build_embedder(cfg)
     retriever = HybridRetriever(cfg, embedder)
-    retriever.build_or_load()
+    retriever.build_from_documents(entries)
     return retriever
 
 
 app = FastAPI(
     title="瀚川工业园能耗异常定位智能体",
-    version="0.4.0",
-    description="阶段4：Web 聊天 + SSE 流式问答 + 异常事件查询",
+    version="0.5.0",
+    description="阶段5第二批：管理后台（知识库文档管理 + 影子重建原子切换）",
     lifespan=lifespan,
 )
 
@@ -128,6 +150,14 @@ app.include_router(chat.router)
 app.include_router(sessions.router)
 app.include_router(anomalies.router)
 app.include_router(users.router)
+app.include_router(kb.router)
+app.include_router(admin.router)
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_root() -> RedirectResponse:
+    """管理后台入口：默认跳知识库页（未登录由页面路由自行 302 到登录页）。"""
+    return RedirectResponse("/admin/kb", status_code=302)
 
 
 @app.get("/api/health", tags=["ops"])

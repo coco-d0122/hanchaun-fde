@@ -1,0 +1,157 @@
+{% extends "admin_base.html" %}
+{% block title %}能源管理知识库{% endblock %}
+{% block pagetitle %}能源管理知识库{% endblock %}
+
+{% block content %}
+<div id="msg" class="msg"></div>
+
+<div class="card">
+  <form id="upload-form" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+    <input type="file" id="file" accept=".md,.pdf" required>
+    <select id="doc-type">
+      {% for code, name in doc_types %}
+      <option value="{{ code }}">{{ name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn primary" id="btn-upload">上传文档</button>
+    <span class="hint">支持 .md / .pdf，单文件 ≤ {{ max_mb }}MB；上传成功后立即对新问答生效</span>
+  </form>
+</div>
+
+<div class="card">
+  <table id="doc-table">
+    <thead>
+      <tr>
+        <th>文档名称</th><th>类型</th><th>版本</th><th>切片数</th>
+        <th>状态</th><th>上传人</th><th>上传时间</th><th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="doc-rows">
+      <tr><td colspan="8" class="empty">加载中…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="hint">
+    <b>说明</b><br>
+    1. 文档状态：<b>published</b> 已发布（检索生效）／<b>failed</b> 处理失败（可重新处理）／
+    <b>needs_ocr</b> PDF 无文本层（需 OCR 后重新上传）／<b>deleted</b> 已删除（检索内容已移除）。<br>
+    2. 删除为软删除：原始行保留供审计，检索立即移除对应内容。<br>
+    3. 内建 6 份模拟规则文档不可删除（它们标注"模拟规则"，非园区已确认制度）。
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+const H = { 'X-Requested-With': 'XMLHttpRequest' };
+const $ = (id) => document.getElementById(id);
+const DOC_TYPES = {{ doc_types_json | safe }};
+const STATUS_TEXT = { published: '已发布', failed: '处理失败', needs_ocr: '需OCR', processing: '处理中', deleted: '已删除' };
+
+function showMsg(text, ok) {
+  const el = $('msg');
+  el.className = 'msg ' + (ok ? 'ok' : 'err');
+  el.textContent = text;
+  setTimeout(() => { el.className = 'msg'; }, 6000);
+}
+
+function fmtTime(s) {
+  if (!s) return '-';
+  return String(s).replace('T', ' ').slice(0, 16);
+}
+
+async function loadDocs() {
+  try {
+    const resp = await fetch('/api/kb/documents');
+    if (resp.status === 401) { location.href = '/login'; return; }
+    const data = await resp.json();
+    render(data.items || []);
+  } catch (e) {
+    showMsg('加载文档列表失败：' + e.message, false);
+  }
+}
+
+function render(items) {
+  const tbody = $('doc-rows');
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">知识库暂无文档</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items.map(d => {
+    const typeName = (DOC_TYPES[d.doc_type] || d.doc_type);
+    const isBuiltin = (d.file_path || '').startsWith('knowledge_base/');
+    const ops = [
+      `<button class="btn small" onclick="reprocess(${d.id})">重新处理</button>`,
+      isBuiltin ? '' : `<button class="btn small danger" onclick="delDoc(${d.id}, '${esc(d.filename)}')">删除</button>`,
+    ].filter(Boolean).join(' ');
+    const errTip = d.error_info ? ` title="${esc(d.error_info)}"` : '';
+    return `<tr>
+      <td title="${esc(d.file_path || '')}">${esc(d.filename)}</td>
+      <td>${typeName}</td>
+      <td>v${d.version_no ?? '-'}</td>
+      <td>${d.chunk_count ?? '-'}</td>
+      <td${errTip}><span class="tag ${d.status}">${STATUS_TEXT[d.status] || d.status}</span></td>
+      <td>${esc(d.uploaded_by_name || '系统')}</td>
+      <td>${fmtTime(d.created_at)}</td>
+      <td>${ops}</td>
+    </tr>`;
+  }).join('');
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+$('upload-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const file = $('file').files[0];
+  if (!file) { showMsg('请先选择文件', false); return; }
+  const btn = $('btn-upload');
+  btn.disabled = true; btn.textContent = '上传处理中…（切片+向量化，约数秒）';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('doc_type', $('doc-type').value);
+    const resp = await fetch('/api/kb/documents', { method: 'POST', headers: H, body: fd });
+    const data = await resp.json();
+    if (resp.ok && data.ok) {
+      showMsg(data.message, true);
+      $('file').value = '';
+      loadDocs();
+    } else {
+      showMsg(data.message || '上传失败', false);
+      loadDocs();   // failed / needs_ocr 状态也要刷新出来
+    }
+  } catch (err) {
+    showMsg('上传请求失败：' + err.message, false);
+  } finally {
+    btn.disabled = false; btn.textContent = '上传文档';
+  }
+});
+
+async function reprocess(id) {
+  if (!confirm('重新处理该文档？（内容未变时秒级完成）')) return;
+  try {
+    const resp = await fetch(`/api/kb/documents/${id}/reprocess`, { method: 'POST', headers: H });
+    const data = await resp.json();
+    showMsg(data.message || (resp.ok ? '完成' : '失败'), resp.ok && data.ok);
+    loadDocs();
+  } catch (e) { showMsg('请求失败：' + e.message, false); }
+}
+
+async function delDoc(id, name) {
+  if (!confirm(`确认删除文档「${name}」？删除后检索立即移除该文档内容（可审计追溯）。`)) return;
+  try {
+    const resp = await fetch(`/api/kb/documents/${id}`, { method: 'DELETE', headers: H });
+    const data = await resp.json();
+    showMsg(data.message || (resp.ok ? '已删除' : '删除失败'), resp.ok && data.ok);
+    loadDocs();
+  } catch (e) { showMsg('请求失败：' + e.message, false); }
+}
+
+loadDocs();
+</script>
+{% endblock %}

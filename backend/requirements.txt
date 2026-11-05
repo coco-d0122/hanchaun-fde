@@ -22,6 +22,10 @@ PyJWT>=2.8
 bcrypt>=4.1
 jinja2>=3.1
 
+# 文件上传与 PDF 解析（阶段5第二批：知识库文档管理）
+python-multipart>=0.0.9
+pypdf>=4.0
+
 # 检索与规则引擎（阶段3同款）
 numpy>=1.26
 requests>=2.31

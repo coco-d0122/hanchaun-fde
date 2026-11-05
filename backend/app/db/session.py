@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -18,10 +20,13 @@ from app.core.config import get_settings
 settings = get_settings()
 
 # check_same_thread=False：aio­sqlite 的连接在线程池与事件循环间交接，必须放开
+# json_serializer：JSON 列（audit_logs.detail / user_roles.scope_values）保留中文原文，
+#   否则写库时被转成 \uXXXX，排查日志时不可读（对外接口不受影响，那里是反序列化后的对象）
 engine = create_async_engine(
     settings.db_url,
     echo=False,
     connect_args={"check_same_thread": False} if settings.db_url.startswith("sqlite") else {},
+    json_serializer=lambda obj: json.dumps(obj, ensure_ascii=False),
 )
 
 session_factory = async_sessionmaker(engine, expire_on_commit=False)
