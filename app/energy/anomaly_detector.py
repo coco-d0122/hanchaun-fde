@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import math
-import statistics
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -18,7 +17,7 @@ from typing import Any
 import numpy as np
 
 from app.core.config import Settings
-from app.energy.data_service import Interval, Reading, compute_intervals
+from app.energy.data_service import Interval
 
 logger = logging.getLogger(__name__)
 
@@ -347,7 +346,7 @@ class RuleB_BalanceDiff:
                 "先排除数据质量问题（分表缺数、表底回退），再判断是否为真实计量偏差",
                 "调阅该时段的用电负荷记录与检修/试机记录，确认是否存在未纳入计量的临时负荷",
                 "核对总表与分表的统计时段是否严格对齐（分表冻结时间不同会造成系统性错位）",
-            ],
+            ] + causes,
             need_review=True,
         )
 

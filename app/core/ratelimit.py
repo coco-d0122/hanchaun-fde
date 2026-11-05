@@ -21,9 +21,8 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections import defaultdict
 
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.config import get_settings
 from app.core.security import COOKIE_NAME, decode_token

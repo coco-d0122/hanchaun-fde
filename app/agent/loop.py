@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
 from typing import Any, AsyncIterator
 
 from app.agent.guards import ToolExecutor, ToolResult
@@ -25,9 +24,9 @@ from app.agent.state import TaskState
 from app.agent.tools import AgentContext, load_dataset
 from app.core.config import Settings
 from app.core.llm import LLMError, call_llm_stream, call_llm_tools
-from app.rag.retriever import HybridRetriever
 from app.db import repo
 from app.db.session import session_factory
+from app.rag.retriever import HybridRetriever
 from app.services.prompt_service import get_system_prompt
 
 logger = logging.getLogger(__name__)

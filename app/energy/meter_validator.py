@@ -9,11 +9,13 @@
 from __future__ import annotations
 
 import statistics
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.energy.data_service import (compute_intervals, parse_param_ts,
-                                     select_window)
+from app.energy.data_service import compute_intervals, parse_param_ts, select_window
 from app.errors import AgentToolError
+
+if TYPE_CHECKING:  # 仅类型检查时导入：运行时靠鸭子类型，避免 energy ↔ agent 循环依赖
+    from app.agent.context import AgentContext
 
 
 def validate_meter_data(ctx: AgentContext, meter_id: str | None = None,

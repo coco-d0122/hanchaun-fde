@@ -6,8 +6,14 @@ from __future__ import annotations
 import jwt
 
 from app.core import permissions
-from app.core.security import (JWT_ALGORITHM, decode_token, get_jwt_secret,
-                               hash_password, issue_token, verify_password)
+from app.core.security import (
+    JWT_ALGORITHM,
+    decode_token,
+    get_jwt_secret,
+    hash_password,
+    issue_token,
+    verify_password,
+)
 
 
 def test_password_is_hashed_not_plaintext():

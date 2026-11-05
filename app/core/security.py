@@ -6,12 +6,11 @@
   - 密码：bcrypt cost=12，库中只存 $2b$ 前缀的哈希，绝不存明文
   - JWT：HS256，有效期 8 小时（工作班次长度，过期重登，不做 refresh token）
   - 密钥：JWT_SECRET 环境变量优先；未配置时生成随机密钥并持久化到
-    backend/.jwt_secret（gitignore），避免每次重启把所有人登出
+    仓库根目录 .jwt_secret（gitignore），避免每次重启把所有人登出
 """
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path

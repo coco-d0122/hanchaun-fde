@@ -24,17 +24,16 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import (admin, agent, anomalies, audit, auth, chat, kb, logs,
-                     prompts, sessions, users)
+from app.api import admin, agent, anomalies, audit, auth, chat, kb, logs, prompts, sessions, users
 from app.core.config import get_settings
-from app.core.ratelimit import RateLimitMiddleware
-from app.rag.embeddings import build_embedder
 from app.core.llm import call_llm
-from app.rag.retriever import HybridRetriever
+from app.core.ratelimit import RateLimitMiddleware
 from app.db import repo
 from app.db.models import Base
 from app.db.session import engine, session_factory
 from app.errors import register_error_handlers
+from app.rag.embeddings import build_embedder
+from app.rag.retriever import HybridRetriever
 from app.services import kb_service
 
 logging.basicConfig(
@@ -138,7 +137,8 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
-def _build_retriever(cfg, entries: list) -> HybridRetriever:  # noqa: ANN001（Settings 循环导入风险，宽松标注）
+# cfg 用宽松标注：Settings 与本模块存在循环导入风险，运行期按鸭子类型使用
+def _build_retriever(cfg, entries: list) -> HybridRetriever:
     """同步构建检索器（在线程池中执行）。
 
     阶段5第二批起：内容来源是 DB 里 status=published 的文档清单，

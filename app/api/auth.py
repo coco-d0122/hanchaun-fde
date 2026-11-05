@@ -15,13 +15,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_current_user, require_csrf_header
+from app.api.deps import get_current_user, get_permission_cache, require_csrf_header
 from app.core.security import COOKIE_NAME, JWT_EXPIRE_HOURS, issue_token, verify_password
 from app.db import repo
 from app.db.models import User
 from app.db.session import session_factory
-from app.errors import AppError, param_invalid
-from app.api.deps import get_permission_cache
+from app.errors import AppError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])

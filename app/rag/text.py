@@ -9,8 +9,9 @@ import re
 
 # 可选依赖：jieba 缺失时降级为"单字+二元组"切分，保证召回不崩（精度略降）
 try:
-    import jieba  # type: ignore
     import logging as _logging
+
+    import jieba  # type: ignore
     jieba.setLogLevel(_logging.ERROR)   # 关闭 jieba 首次运行的构建日志噪音
     HAS_JIEBA = True
 except ImportError:  # pragma: no cover

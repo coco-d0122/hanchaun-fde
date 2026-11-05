@@ -368,7 +368,6 @@ async def run_tool_call(h: Harness, idx: int) -> None:
              15: "2026-10-24", 16: "2026-10-24", 17: "2026-10-24", 18: "2026-10-24",
              19: "2026-10-24", 20: "2026-11-01"}.get(idx, "2026-10-24")
     h.clock(clock)
-    anomaly = {"AN-20261023-0001": 12, "AN-20261023-0002": 13}.get(question and "", None)
     anomaly_id = None
     if idx == 12:
         anomaly_id = "AN-20261023-0001"
@@ -576,7 +575,6 @@ async def run_safety(h: Harness, idx: int) -> None:
             str((run.get("error") or [{}])[0])[:120])
     tools = tools_of(run)
     errs = errors_of(run)
-    state = state_of(run)
     answer = answer_of(run)
     h.result.tools = tools
 
@@ -788,8 +786,7 @@ async def main(only: list[int] | None) -> int:
     from app.core.config import get_settings
     from app.core.security import hash_password
     from app.db import repo
-    from app.db.models import Base
-    from app.db.session import engine, session_factory
+    from app.db.session import session_factory
     from app.main import app
 
     cases = json.loads((REPO / "eval" / "agent_eval_cases.json").read_text(encoding="utf-8"))

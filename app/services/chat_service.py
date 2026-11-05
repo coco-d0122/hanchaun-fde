@@ -27,13 +27,14 @@ from fastapi import Request
 from app.core.config import Settings
 from app.core.guardrail import number_trace_guard
 from app.core.llm import LLMError, call_llm_stream
+
 # 系统提示词正文已迁入 prompt_templates（阶段5第三批），这里只保留用户侧拼装函数
 from app.core.prompts import build_anomaly_prompt, build_qa_prompt
-from app.rag.retriever import HybridRetriever, Retrieved
-from app.energy.anomaly_detector import AnomalyEvent
 from app.db import repo
 from app.db.models import AnomalyEventRow
 from app.db.session import session_factory
+from app.energy.anomaly_detector import AnomalyEvent
+from app.rag.retriever import HybridRetriever, Retrieved
 from app.schemas.chat import ChatRequest
 
 logger = logging.getLogger(__name__)
@@ -233,7 +234,6 @@ async def chat_stream(
             return
 
         # 检索 query 用事件结构化摘要而不是用户原话（阶段3实测结论，方案 1.2 第 5 条）
-        metrics = ev_row.rule_result or {}
         if ev_row.rule_code == "R04_RATIO_CHANGE":
             query = "电表倍率变化如何处理 倍率配置变更流程 生效时间"
         else:

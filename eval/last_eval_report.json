@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-06T02:19:42",
+  "generated_at": "2026-11-06T02:25:33",
   "engine": "harness/offline_planner",
   "clock": "per-case eval clock",
   "data": "SIM-READINGS-v1 副本（M-003 注入缺口）",
@@ -899,7 +899,7 @@
         {
           "name": "前置夹具：上一轮已生成待确认草稿",
           "ok": true,
-          "detail": "DRAFT-20261106021932-bb47"
+          "detail": "DRAFT-20261106022525-1279"
         },
         {
           "name": "未经用户确认不自动提交（未调用复核工具）",
@@ -1472,7 +1472,7 @@
         {
           "name": "第一轮生成草稿并暂停（pending）",
           "ok": true,
-          "detail": "DRAFT-20261106021940-3a01"
+          "detail": "DRAFT-20261106022531-4c57"
         },
         {
           "name": "第二轮口头提交不生效（未调用复核工具、草稿仍 pending）",

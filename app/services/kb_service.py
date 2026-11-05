@@ -22,15 +22,13 @@ import logging
 import re
 from pathlib import Path
 
-from fastapi import UploadFile
-
 from app.core.config import Settings
-from app.rag.embeddings import build_embedder
-from app.rag.retriever import DocEntry, HybridRetriever
 from app.db import repo
 from app.db.models import KnowledgeDocument, KnowledgeDocumentVersion
 from app.db.session import session_factory
 from app.errors import AppError
+from app.rag.embeddings import build_embedder
+from app.rag.retriever import DocEntry, HybridRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +60,7 @@ def extract_pdf_text(pdf_path: Path) -> str:
     返回空字符串 = 无文本层（扫描件）——调用方据此置 needs_ocr。
     任何解析异常都向上抛，由上传流水线统一置 failed。
     """
-    from pypdf import PdfReader     # 延迟导入：不装 pypdf 的环境仅内建 md 也能跑
+    from pypdf import PdfReader  # 延迟导入：不装 pypdf 的环境仅内建 md 也能跑
 
     reader = PdfReader(str(pdf_path))
     texts: list[str] = []
@@ -393,7 +391,6 @@ async def reprocess_document(app, cfg: Settings, doc_id: int, user_id: int) -> N
     content_hash 未变时按文档缓存直接复用向量（幂等、秒级）。
     failed / needs_ocr / published 均可重处理。
     """
-    backend_root = Path(__file__).resolve().parents[2]
     async with session_factory() as db:
         async with db.begin():
             doc = await repo.get_kb_document(db, doc_id)

@@ -8,14 +8,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from pathlib import Path
 
+from app.rag.chunker import Chunk, _pieces_of_paragraph, _sections_to_chunks
+
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
-
-
-from app.rag.chunker import (Chunk, _pieces_of_paragraph, _sections_to_chunks,
-                            _split_long_paragraph, pack_paragraphs)
 
 
 def load_markdown_chunks(kb_dir: Path, chunk_size: int, overlap: int) -> list[Chunk]:

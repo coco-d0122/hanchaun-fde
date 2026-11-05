@@ -22,8 +22,12 @@ from pydantic import BaseModel, Field
 from app.agent import confirmation
 from app.agent.harness import HarnessRunner
 from app.agent.loop import AgentRunner
-from app.api.deps import (get_current_user, get_permission_cache, require_csrf_header,
-                          require_permission)
+from app.api.deps import (
+    get_current_user,
+    get_permission_cache,
+    require_csrf_header,
+    require_permission,
+)
 from app.core.config import get_settings
 from app.db import repo
 from app.db.models import User

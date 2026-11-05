@@ -19,7 +19,6 @@ Agent 评测用例校验脚本（配套 eval/agent_eval_cases.json）
 from __future__ import annotations
 
 import json
-import sys
 from collections import Counter
 from pathlib import Path
 

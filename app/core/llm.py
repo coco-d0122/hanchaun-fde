@@ -17,7 +17,7 @@ import json
 import logging
 import re
 import time
-from typing import AsyncIterator, Callable, Awaitable
+from typing import AsyncIterator, Callable
 
 import httpx
 

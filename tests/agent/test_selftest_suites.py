@@ -32,6 +32,6 @@ def test_selftest_suite_passes(script: str, expected: int):
                           encoding="utf-8", errors="replace", timeout=600)
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-2000:]
-    assert f"失败 0 项" in out, out[-2000:]
+    assert "失败 0 项" in out, out[-2000:]
     # 断言条数也要对得上，防止脚本被误删成"空跑"
     assert f"{expected} 项" in out, f"断言条数与预期 {expected} 不一致：\n{out[-800:]}"

@@ -20,9 +20,8 @@ from __future__ import annotations
 import logging
 import time
 
+from app.agent.prompts import HARD_CONSTRAINT, MAX_TEMPLATE_CHARS, MIN_TEMPLATE_CHARS
 from app.core.config import Settings
-from app.agent.prompts import (HARD_CONSTRAINT, MAX_TEMPLATE_CHARS,
-                                     MIN_TEMPLATE_CHARS)
 from app.db import repo
 from app.db.session import session_factory
 from app.errors import AppError

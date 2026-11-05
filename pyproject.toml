@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.urls]
 Repository = "https://github.com/coco-d0122/hanchaun-fde"
@@ -52,4 +52,11 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-exclude = [".venv", "prototype", "__pycache__"]
+exclude = [".venv", "prototype", "__pycache__", "uploads", ".cache"]
+
+[tool.ruff.lint]
+# 只启用"能真实抓 bug"的规则集：语法/未定义名/未使用导入/导入顺序。
+# 刻意不启用 B008（FastAPI 的 Depends 默认值写法会全部命中）与 UP009
+# （历史文件统一带 coding 头，清理收益为零、diff 噪音大）。
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

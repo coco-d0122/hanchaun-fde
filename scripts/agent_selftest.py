@@ -51,9 +51,9 @@ def parse_sse(text: str) -> dict[str, list[dict]]:
 
 
 async def main() -> int:
-    from app.agent.state import TaskState
-    from app.agent.tools import AgentContext, AgentToolError
     from app.agent.guards import ToolExecutor
+    from app.agent.state import TaskState
+    from app.agent.tools import AgentContext
     from app.core.config import get_settings
     from app.core.security import hash_password
     from app.db import repo

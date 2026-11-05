@@ -15,8 +15,8 @@ import json
 from typing import Any
 
 from app.core.llm import CTX_CLOSE, CTX_OPEN, EV_CLOSE, EV_OPEN
-from app.rag.retriever import Retrieved
 from app.energy.anomaly_detector import AnomalyEvent, RuleA_RatioChange
+from app.rag.retriever import Retrieved
 
 # ---- 模板版本：v1（阶段4）。阶段5将迁入 prompt_templates 表做版本管理 ----
 

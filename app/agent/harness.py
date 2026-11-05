@@ -28,17 +28,17 @@ import time
 from typing import Any, AsyncIterator, Callable
 
 from app.agent.context import ConversationContext
-from app.agent.dependencies import (check_hard_gate, plan_batches, summarize_round)
-from app.agent.guards import ToolExecutor, ToolResult
+from app.agent.dependencies import check_hard_gate, plan_batches, summarize_round
+from app.agent.guards import ToolResult
 from app.agent.loop import AgentRunner, _sse
 from app.agent.schemas import ParamInvalid, validate_args
-from app.agent.tools import load_dataset
 from app.agent.specs import RETRYABLE, TOOL_SPECS
+from app.agent.tools import load_dataset
 from app.core.config import Settings
 from app.core.llm import LLMError, call_llm_tools
-from app.rag.retriever import HybridRetriever
 from app.db import repo
 from app.db.session import session_factory
+from app.rag.retriever import HybridRetriever
 from app.services.prompt_service import get_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -522,7 +522,6 @@ class HarnessRunner(AgentRunner):
         knowledge = [e for e in self.ctx.evidence
                      if e["source_type"] == "knowledge"]
         head = "【离线确定性摘要｜未调用大模型，配置 LLM_API_KEY 后由模型生成解释】"
-        refusal = self._refusal_block()
 
         # ---- “提交审核”：不调工具，交给用户确认 + 二次校验 ----
         if self.intent == "followup_submit":

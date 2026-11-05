@@ -16,13 +16,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from app.rag.bm25 import BM25Index, _bm25_doc_tokens
 from app.core.config import Settings
+from app.rag.bm25 import BM25Index, _bm25_doc_tokens
 from app.rag.embeddings import BaseEmbedder
-from app.rag.loader import (Chunk, load_markdown_chunks, markdown_file_chunks,
-                             plain_text_chunks)
-from app.rag.text import normalize_query, tokenize_zh
 from app.rag.index_manager import VectorIndex
+from app.rag.loader import Chunk, load_markdown_chunks, markdown_file_chunks, plain_text_chunks
+from app.rag.text import normalize_query, tokenize_zh
 
 if TYPE_CHECKING:
     pass
@@ -279,7 +278,7 @@ class HybridRetriever:
             return markdown_file_chunks(entry.file_path, entry.display_name,
                                         self.cfg.chunk_size, self.cfg.chunk_overlap)
         if suffix == ".pdf":
-            from app.services.kb_service import extract_pdf_text   # 延迟导入避免环
+            from app.services.kb_service import extract_pdf_text  # 延迟导入避免环
             text = extract_pdf_text(entry.file_path)
             if not text.strip():
                 return []

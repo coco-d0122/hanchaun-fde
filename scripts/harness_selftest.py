@@ -38,16 +38,15 @@ def parse_sse(text: str) -> dict[str, list[dict]]:
 
 
 async def main() -> int:
-    from app.agent import harness
     from app.agent.dependencies import plan_batches
     from app.agent.harness import HarnessRunner
     from app.agent.schemas import ParamInvalid, validate_args
     from app.core.config import get_settings
-    from app.rag.embeddings import build_embedder
-    from app.rag.retriever import HybridRetriever
     from app.db import repo
     from app.db.models import Base
     from app.db.session import engine, session_factory
+    from app.rag.embeddings import build_embedder
+    from app.rag.retriever import HybridRetriever
     from app.services import kb_service
 
     async with engine.begin() as conn:
@@ -206,6 +205,7 @@ async def main() -> int:
 
     # ---------- 8. 日志查询接口（阶段5 审计兼容） ----------
     import httpx
+
     from app.core.security import hash_password
     from app.main import app
 
@@ -218,7 +218,7 @@ async def main() -> int:
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                     base_url="http://test") as client:
-            lr = await client.post("/api/auth/login",
+            await client.post("/api/auth/login",
                                    json={"username": "harness_tester",
                                          "password": "TesterPass123"},
                                    headers={"X-Requested-With": "XMLHttpRequest"})

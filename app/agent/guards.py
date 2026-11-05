@@ -16,12 +16,10 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
 
-from app.agent.specs import (MAX_SAME_TOOL_CALLS, MAX_TOTAL_CALLS,
-                             TOOL_NAMES, TOOL_PERMISSION)
+from app.agent.specs import MAX_SAME_TOOL_CALLS, MAX_TOTAL_CALLS, TOOL_NAMES, TOOL_PERMISSION
 from app.agent.state import TaskState
-from app.agent.tools import AgentContext, AgentToolError, TOOL_IMPLS
+from app.agent.tools import TOOL_IMPLS, AgentContext, AgentToolError
 
 logger = logging.getLogger(__name__)
 

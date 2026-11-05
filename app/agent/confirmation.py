@@ -17,14 +17,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from datetime import datetime
 from typing import Any
 
-from app.agent.tools import AgentContext, TOOL_IMPLS
-from app.core.config import Settings
 from app.agent.prompts import MAX_TEMPLATE_CHARS
+from app.agent.tools import TOOL_IMPLS, AgentContext
+from app.core.config import Settings
 from app.db import repo
 from app.db.session import session_factory
 from app.errors import AppError

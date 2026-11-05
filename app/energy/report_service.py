@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.core.guardrail import number_trace_guard
 from app.errors import AgentToolError
+
+if TYPE_CHECKING:  # 仅类型检查时导入：运行时靠鸭子类型，避免 energy ↔ agent 循环依赖
+    from app.agent.context import AgentContext
 
 
 def generate_anomaly_report(ctx: AgentContext, anomaly_id: str | None = None,

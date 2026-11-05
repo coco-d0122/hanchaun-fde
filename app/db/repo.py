@@ -19,14 +19,28 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.permissions import PERMISSIONS, ROLES, ROLE_PERMISSIONS
+from app.core.permissions import PERMISSIONS, ROLE_PERMISSIONS, ROLES
+from app.db.models import (
+    AnomalyEventRow,
+    AnomalyEvidenceRow,
+    AuditLog,
+    Conversation,
+    ConversationAuditFlag,
+    KnowledgeDocument,
+    KnowledgeDocumentVersion,
+    Message,
+    MessageCitation,
+    Permission,
+    PromptTemplate,
+    PromptTemplateVersion,
+    ReviewRecord,
+    Role,
+    RolePermission,
+    User,
+    UserRole,
+)
 from app.energy.anomaly_detector import AnomalyEvent, detect_all
 from app.energy.data_service import compute_intervals, load_readings
-from app.db.models import (AnomalyEventRow, AnomalyEvidenceRow, AuditLog, Conversation,
-                            ConversationAuditFlag, KnowledgeDocument,
-                            KnowledgeDocumentVersion, Message, MessageCitation, Permission,
-                            PromptTemplate, PromptTemplateVersion, ReviewRecord, Role,
-                            RolePermission, User, UserRole)
 
 logger = logging.getLogger(__name__)
 
@@ -1193,7 +1207,8 @@ async def list_audit_logs(db: AsyncSession, date_from: str | None = None,
 
 async def purge_old_audit_logs(db: AsyncSession, retention_days: int) -> int:
     """按保留天数清理过期日志（默认 90 天，配置项可改）。返回删除条数。"""
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
 
     if retention_days <= 0:
         return 0

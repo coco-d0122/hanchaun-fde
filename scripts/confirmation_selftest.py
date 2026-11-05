@@ -143,7 +143,8 @@ async def main() -> int:
             # ---- 4. 确认 ≠ 签核：异常状态与签核记录不变 ----
             async with session_factory() as db:
                 async with db.begin():
-                    from sqlalchemy import select, func
+                    from sqlalchemy import func, select
+
                     from app.db.models import AnomalyEventRow, ReviewRecord
                     statuses = (await db.execute(
                         select(AnomalyEventRow.status))).scalars().all()

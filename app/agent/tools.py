@@ -20,18 +20,20 @@ Agent 原子工具实现（阶段6 方案第四节）
 
 from __future__ import annotations
 
-import json
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from app.core.config import Settings
 from app.energy.anomaly_detector import detect_all
-from app.energy.data_service import (Reading, compute_intervals, energy_by_meter,
-                                     load_dataset, load_readings, parse_param_ts,
-                                     select_window)
+from app.energy.data_service import (
+    compute_intervals,
+    energy_by_meter,
+    load_dataset,
+    parse_param_ts,
+    select_window,
+)
 from app.energy.meter_validator import validate_meter_data
 from app.energy.report_service import generate_anomaly_report
 from app.errors import AgentToolError

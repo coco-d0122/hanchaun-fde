@@ -80,9 +80,9 @@ SSE 事件：`task` → `status` → `round` → `tool_call` → `tool_result` �
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/anomalies` | 列表（支持楼栋/状态/规则筛选） |
-| GET | `/api/anomalies/{id}` | 详情 + 证据 |
-| GET | `/api/anomalies/{id}/reviews` | 复核记录（只读） |
-| POST | `/api/anomalies/{id}/reviews` | **405：签核通道未开放** |
+| GET | `/api/anomalies/{anomaly_id}` | 详情 + 证据 |
+| GET | `/api/anomalies/{anomaly_id}/reviews` | 复核记录（只读） |
+| POST | `/api/anomalies/{anomaly_id}/reviews` | **405：签核通道未开放** |
 
 ## 5. 知识库管理（管理员）
 
@@ -90,9 +90,9 @@ SSE 事件：`task` → `status` → `round` → `tool_call` → `tool_result` �
 |---|---|---|
 | GET | `/api/kb/documents` | 文档列表（含切片数、状态） |
 | POST | `/api/kb/documents` | 上传（`.md`/`.pdf`，≤10MB，扩展名+魔数双重校验） |
-| GET | `/api/kb/documents/{id}` | 详情与版本 |
-| DELETE | `/api/kb/documents/{id}` | 软删除（内建文档 403） |
-| POST | `/api/kb/documents/{id}/reprocess` | 重新处理（含 OCR 缺失分支） |
+| GET | `/api/kb/documents/{doc_id}` | 详情与版本 |
+| DELETE | `/api/kb/documents/{doc_id}` | 软删除（内建文档 403） |
+| POST | `/api/kb/documents/{doc_id}/reprocess` | 重新处理（含 OCR 缺失分支） |
 
 上传走"影子重建 + 原子切换"：新索引建好并验证后才替换，构建期间旧索引持续可查。
 
@@ -104,7 +104,7 @@ SSE 事件：`task` → `status` → `round` → `tool_call` → `tool_result` �
 | GET | `/api/prompts/{code}` | 当前版本 |
 | PUT | `/api/prompts/{code}` | 保存（自动生成新版本，30s 缓存立即失效） |
 | GET | `/api/prompts/{code}/versions` | 历史版本 |
-| POST | `/api/prompts/versions/{id}/restore` | 恢复历史版本 |
+| POST | `/api/prompts/versions/{version_id}/restore` | 恢复历史版本 |
 
 模板可改，但**"系统级硬性约束"段由代码在渲染时追加**：把模板改成"可以编造数据"也删不掉。
 
@@ -114,7 +114,7 @@ SSE 事件：`task` → `status` → `round` → `tool_call` → `tool_result` �
 |---|---|---|
 | GET | `/api/users` | 用户列表 |
 | POST | `/api/users` | 创建用户 |
-| PATCH | `/api/users/{id}` | 改角色 / 禁用启用 |
+| PATCH | `/api/users/{user_id}` | 改角色 / 禁用启用 |
 
 权限码 13 个、角色 2 个（`user` / `admin`）。`anomaly:review:submit`（业务签核）
 **不授予任何角色**，包括管理员。
@@ -127,7 +127,7 @@ SSE 事件：`task` → `status` → `round` → `tool_call` → `tool_result` �
 | GET | `/api/audit/conversations/{message_id}` | 单条消息详情 |
 | GET | `/api/audit/flags` | 风险标记列表 |
 | POST | `/api/audit/flags` | 添加标记（7 类） |
-| PATCH | `/api/audit/flags/{id}` | 更新标记 |
+| PATCH | `/api/audit/flags/{flag_id}` | 更新标记 |
 | GET | `/api/audit/flag-types` | 标记类型枚举 |
 | GET | `/api/logs` | 操作日志（动作枚举与方案 7.3 对齐） |
 | GET | `/api/logs/actions` | 可选动作列表 |
@@ -139,7 +139,7 @@ SSE 事件：`task` → `status` → `round` → `tool_call` → `tool_result` �
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/sessions` | 我的会话列表 |
-| GET | `/api/sessions/{id}/messages` | 会话消息（他人会话按不存在处理） |
+| GET | `/api/sessions/{session_id}/messages` | 会话消息（他人会话按不存在处理） |
 | GET | `/api/health` | 健康检查：知识库切片数、LLM 就绪、缓存状态 |
 
 ```bash
@@ -164,3 +164,6 @@ Retry-After: 37
 `/admin/dashboard`、`/admin/anomalies`、`/admin/kb`、`/admin/prompts`、`/admin/users`、
 `/admin/audit`、`/admin/logs`、`/admin/agent-tasks`、`/admin/agent-logs`。
 均为服务端渲染，未登录 302 到 `/login`。
+
+> 路径参数名以代码为准（如 `{anomaly_id}`、`{doc_id}`）：本文档与 `app.openapi()` 逐个路径核对一致，
+> 只有参数命名差异，没有缺漏接口。

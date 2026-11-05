@@ -19,8 +19,7 @@ from app.core.config import get_settings
 from app.db import repo
 from app.db.models import User
 from app.db.session import session_factory
-from app.errors import (anomaly_not_found, anomaly_not_specified, kb_not_ready,
-                        session_not_found)
+from app.errors import anomaly_not_found, anomaly_not_specified, kb_not_ready, session_not_found
 from app.schemas.chat import ChatRequest
 from app.services.chat_service import chat_stream, resolve_anomaly_id
 
