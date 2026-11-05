@@ -29,12 +29,111 @@ class Base(DeclarativeBase):
     pass
 
 
+# ==============================================================================
+# 阶段5第一批：身份与权限（5 张表）
+# 关键立场：权限码 / 数据范围(scope 列) / 业务签核权三维度分离。
+# anomaly:review:submit 首期不授予任何角色——"系统管理员 ≠ 电气安全主管"。
+# ==============================================================================
+
+class User(Base):
+    """用户表 users。密码只存 bcrypt 哈希（$2b$ 前缀），绝不存明文。"""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(128))     # bcrypt
+    display_name: Mapped[str] = mapped_column(String(64), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    roles: Mapped[list["Role"]] = relationship(
+        secondary="user_roles", lazy="selectin", viewonly=True)
+
+
+class Role(Base):
+    """角色表 roles：角色 = 权限码集合。扩展六业务角色只加数据不改代码。"""
+
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True)   # user / admin / 未来业务角色
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(String(256), default="")
+
+    permissions: Mapped[list["Permission"]] = relationship(
+        secondary="role_permissions", lazy="selectin", viewonly=True)
+
+
+class Permission(Base):
+    """权限码字典 permissions。scope_required 标记该权限需叠加数据范围判断。"""
+
+    __tablename__ = "permissions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True)   # 形如 kb:write
+    description: Mapped[str] = mapped_column(String(128), default="")
+    scope_required: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class UserRole(Base):
+    """用户-角色关联 user_roles。
+
+    scope_type / scope_values 为**数据范围第二维度**的预留列（3.2 节）：
+    本阶段恒为 all 且接口层不读取——但列已在库里，未来按楼栋/租户
+    授权时只改权限中间件的过滤逻辑，不改表。
+    """
+
+    __tablename__ = "user_roles"
+
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    role_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True)
+    scope_type: Mapped[str] = mapped_column(String(16), default="all")   # all / buildings / tenants
+    scope_values: Mapped[list] = mapped_column(JSON, default=list)       # 如 ["B1","B2"]
+
+
+class RolePermission(Base):
+    """角色-权限关联 role_permissions。"""
+
+    __tablename__ = "role_permissions"
+
+    role_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True)
+    permission_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True)
+
+
+class AuditLog(Base):
+    """系统操作日志 audit_logs（P0）。
+
+    detail 白名单化：只存操作摘要（用户名/角色/对象编号/版本号），
+    绝不含密码、API Key、提示词全文等敏感信息。
+    """
+
+    __tablename__ = "audit_logs"
+    __table_args__ = (Index("ix_audit_logs_time", "created_at", "action"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(64))    # login/logout/user_create/...
+    object_type: Mapped[str] = mapped_column(String(32), default="")
+    object_id: Mapped[str] = mapped_column(String(64), default="")
+    result: Mapped[str] = mapped_column(String(16), default="success")   # success / failure
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    business_ref: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Conversation(Base):
-    """会话表 conversations。"""
+    """会话表 conversations。阶段5第一批：增加 user_id 归属（用户隔离）。"""
 
     __tablename__ = "conversations"
+    __table_args__ = (Index("ix_conv_user", "user_id", "updated_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)          # conv-<uuid>
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(64), default="新会话")        # 首条用户消息前 30 字
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow,

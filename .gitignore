@@ -19,6 +19,7 @@ backend/.cache/
 backend/hanchuan.db
 backend/hanchuan.db-wal
 backend/hanchuan.db-shm
+backend/.jwt_secret
 
 # ---- 编辑器 / 系统 ----
 .vscode/

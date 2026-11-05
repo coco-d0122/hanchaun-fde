@@ -9,15 +9,18 @@ POST /api/chat —— SSE 流式聊天接口（阶段4方案第三节）
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
+from app.api.deps import require_csrf_header, require_login
 from app.core.config import get_settings
 from app.db import repo
+from app.db.models import User
 from app.db.session import session_factory
 from app.errors import (anomaly_not_found, anomaly_not_specified, kb_not_ready,
-                        param_invalid, session_not_found)
+                        session_not_found)
 from app.schemas.chat import ChatRequest
 from app.services.chat_service import chat_stream, resolve_anomaly_id
 
@@ -25,8 +28,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
 
 
-@router.post("/chat")
-async def post_chat(req: ChatRequest, request: Request) -> StreamingResponse:
+@router.post("/chat", dependencies=[Depends(require_csrf_header)])
+async def post_chat(req: ChatRequest, request: Request,
+                    user: Annotated[User, Depends(require_login)]) -> StreamingResponse:
     cfg = get_settings()
 
     # ---- 建流前校验 1：知识库就绪 ----
@@ -34,11 +38,14 @@ async def post_chat(req: ChatRequest, request: Request) -> StreamingResponse:
     if retriever is None or not retriever.chunks:
         raise kb_not_ready()
 
-    # ---- 建流前校验 2：会话存在性 ----
+    # ---- 建流前校验 2：会话存在性（且必须是本人的会话，防横向越权）----
     if req.session_id:
         async with session_factory() as db:
             conv = await repo.get_conversation(db, req.session_id)
         if conv is None:
+            raise session_not_found(req.session_id)
+        if conv.user_id is not None and conv.user_id != user.id:
+            # 别人的会话：按"不存在"处理，不泄露存在性
             raise session_not_found(req.session_id)
 
     # ---- 建流前校验 3：anomaly 模式的事件定位（E1 扩展）----
@@ -58,7 +65,7 @@ async def post_chat(req: ChatRequest, request: Request) -> StreamingResponse:
 
     # ---- 建流：SSE（no-cache 禁用代理缓冲，保证 token 逐段到达）----
     return StreamingResponse(
-        chat_stream(req, request, retriever, cfg),
+        chat_stream(req, request, retriever, cfg, user_id=user.id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -250,6 +250,7 @@ function renderBadge(wrap, cls, text) {
 async function loadSessions() {
   try {
     const resp = await fetch("/api/sessions");
+    if (resp.status === 401) { location.href = "/login"; return; }
     const data = await resp.json();
     state.sessions = data.items || [];
     els.sessionList.innerHTML = "";
@@ -384,7 +385,10 @@ async function sendQuestion() {
   try {
     const resp = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",   // CSRF 校验头（写操作必带）
+      },
       body: JSON.stringify({
         session_id: state.sessionId,
         question,
@@ -393,6 +397,8 @@ async function sendQuestion() {
       }),
       signal: state.abortCtrl.signal,
     });
+
+    if (resp.status === 401) { location.href = "/login"; return; }
 
     if (!resp.ok) {
       // 建流之前的错误：统一 JSON 错误体
@@ -624,3 +630,30 @@ function bindEvents() {
 bindEvents();
 newSession();
 loadSessions();
+loadCurrentUser();
+
+/** 加载当前登录用户：侧栏底部显示用户名与角色，提供退出入口 */
+async function loadCurrentUser() {
+  try {
+    const resp = await fetch("/api/auth/me");
+    if (resp.status === 401) { location.href = "/login"; return; }
+    const me = await resp.json();
+    const foot = document.querySelector(".side-foot");
+    if (foot && me.username) {
+      const roles = (me.roles || []).join("/") || "-";
+      foot.innerHTML =
+        `<span>${escapeHtml(me.username)}（${escapeHtml(roles)}）</span>` +
+        `<a href="javascript:void(0)" id="btn-logout" style="margin-left:8px;color:#1e6fff;">退出</a>`;
+      const logoutBtn = document.getElementById("btn-logout");
+      logoutBtn && logoutBtn.addEventListener("click", async () => {
+        try {
+          await fetch("/api/auth/logout", {
+            method: "POST",
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+          });
+        } catch (e) { /* 忽略网络错误，反正要跳转 */ }
+        location.href = "/login";
+      });
+    }
+  } catch (e) { /* 静默：不阻断聊天界面 */ }
+}

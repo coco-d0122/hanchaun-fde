@@ -13,15 +13,17 @@ lifespan（方案 7.3 红线）：
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 import anyio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import anomalies, chat, sessions
+from app.api import anomalies, auth, chat, sessions, users
 from app.core.config import get_settings
 from app.core.embedder import build_embedder
 from app.core.llm import call_llm
@@ -38,11 +40,35 @@ logging.basicConfig(
 logger = logging.getLogger("hanchuan")
 
 
+def _ensure_column(db_path: Path, table: str, column: str, ddl_type: str) -> None:
+    """轻量迁移：给已有表补列（SQLite ALTER TABLE ADD COLUMN）。
+
+    create_all 不会给已存在的表加列；conversations.user_id 属于阶段5增量，
+    老库升级时在这里补，避免用户丢掉会话历史。
+    """
+    if not db_path.exists():
+        return
+    try:
+        con = sqlite3.connect(str(db_path))
+        cols = [r[1] for r in con.execute(f"PRAGMA table_info({table})")]
+        if cols and column not in cols:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+            con.commit()
+            logger.info("轻量迁移：%s.%s 已补充", table, column)
+        con.close()
+    except sqlite3.Error:
+        logger.exception("轻量迁移失败 %s.%s", table, column)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = get_settings()
 
-    # ---- 1) 建表 + 自愈 + 异常事件初始化 ----
+    # ---- 0) 轻量迁移（老库补列）----
+    db_file = Path(cfg.db_url.split("///")[-1])
+    _ensure_column(db_file, "conversations", "user_id", "INTEGER")
+
+    # ---- 1) 建表 + 自愈 + 异常事件初始化 + 角色/权限种子 ----
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with session_factory() as db:
@@ -54,6 +80,9 @@ async def lifespan(app: FastAPI):
             seeded = await repo.seed_anomaly_events(db, cfg)
             if seeded:
                 logger.info("异常事件落库：%s 条", seeded)
+            await repo.seed_roles_permissions(db)
+            app.state.permission_cache = await repo.list_role_permissions(db)
+    logger.info("角色/权限种子就绪：%s 个角色", len(app.state.permission_cache))
 
     # ---- 2) 检索器构建（线程池：Embedding 可能分钟级，不能阻塞事件循环启动）----
     retriever = await anyio.to_thread.run_sync(
@@ -94,9 +123,11 @@ app = FastAPI(
 )
 
 register_error_handlers(app)
+app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(sessions.router)
 app.include_router(anomalies.router)
+app.include_router(users.router)
 
 
 @app.get("/api/health", tags=["ops"])
@@ -124,7 +155,16 @@ _static_dir = Path(__file__).resolve().parents[1] / "static"
 if _static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
+    @app.get("/login", include_in_schema=False)
+    async def login_page() -> FileResponse:
+        """登录页（未登录用户可访问）。"""
+        return FileResponse(_static_dir / "login.html")
+
     @app.get("/", include_in_schema=False)
-    async def index() -> Path:
-        from fastapi.responses import FileResponse
+    async def index(request: Request):
+        """聊天页：未登录 302 跳登录页（页面路由级保护）。"""
+        from app.api.deps import get_current_user_optional
+        user = await get_current_user_optional(request)
+        if user is None:
+            return RedirectResponse("/login", status_code=302)
         return FileResponse(_static_dir / "index.html")

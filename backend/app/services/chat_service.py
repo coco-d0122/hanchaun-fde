@@ -144,12 +144,14 @@ async def chat_stream(
     http_request: Request,
     retriever: HybridRetriever,
     cfg: Settings,
+    user_id: int | None = None,
 ) -> AsyncIterator[str]:
     """
     SSE 主流程生成器。
 
     前置校验（会话存在、事件存在、KB 就绪）已在 API 层完成；
     anomaly 模式必须保证 req.anomaly_id 已解析为有效事件编号（API 层负责回填）。
+    user_id：阶段5 会话归属，创建会话时落库。
 
     每次数据库操作使用独立短事务（WAL 模式下多读单写安全），
     避免流式生成期间长时间持有写事务。
@@ -177,7 +179,7 @@ async def chat_stream(
                 conv = None
             created = conv is None
             if created:
-                conv = await repo.create_conversation(db, req.question[:30])
+                conv = await repo.create_conversation(db, req.question[:30], user_id=user_id)
             session_id = conv.id
             history = await repo.load_history(db, session_id, cfg.history_rounds,
                                               cfg.history_char_budget)

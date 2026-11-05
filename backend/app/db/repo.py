@@ -19,11 +19,143 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.permissions import PERMISSIONS, ROLES, ROLE_PERMISSIONS
 from app.core.rules import AnomalyEvent, detect_all, load_readings, compute_intervals
-from app.db.models import (AnomalyEventRow, AnomalyEvidenceRow, Conversation,
-                            Message, MessageCitation)
+from app.db.models import (AnomalyEventRow, AnomalyEvidenceRow, AuditLog, Conversation,
+                            Message, MessageCitation, Permission, Role, RolePermission,
+                            User, UserRole)
 
 logger = logging.getLogger(__name__)
+
+
+# ============================== 身份与权限（阶段5第一批） ==============================
+
+async def seed_roles_permissions(db: AsyncSession) -> None:
+    """把 app.core.permissions 的定义幂等同步进三张表（启动时调用）。"""
+    perm_map: dict[str, Permission] = {}
+    for code, (desc, scope_required) in PERMISSIONS.items():
+        obj = (await db.execute(select(Permission).where(Permission.code == code))).scalar_one_or_none()
+        if obj is None:
+            obj = Permission(code=code, description=desc, scope_required=scope_required)
+            db.add(obj)
+            await db.flush()
+        else:  # 描述变更时更新（幂等）
+            obj.description, obj.scope_required = desc, scope_required
+        perm_map[code] = obj
+
+    for code, (name, desc) in ROLES.items():
+        role = (await db.execute(select(Role).where(Role.code == code))).scalar_one_or_none()
+        if role is None:
+            role = Role(code=code, name=name, description=desc)
+            db.add(role)
+            await db.flush()
+        else:
+            role.name, role.description = name, desc
+        # 同步角色-权限关联（幂等：按当前 ROLE_PERMISSIONS 对齐）
+        current = (await db.execute(
+            select(RolePermission).where(RolePermission.role_id == role.id))).scalars().all()
+        want_ids = {perm_map[c].id for c in ROLE_PERMISSIONS[code]}
+        have_ids = {rp.permission_id for rp in current}
+        for pid in want_ids - have_ids:
+            db.add(RolePermission(role_id=role.id, permission_id=pid))
+        for rp in current:
+            if rp.permission_id not in want_ids:
+                await db.delete(rp)
+    await db.flush()
+
+
+async def get_user_by_name(db: AsyncSession, username: str) -> User | None:
+    return (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
+
+
+async def get_user(db: AsyncSession, user_id: int) -> User | None:
+    return (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+
+
+async def get_user_role_codes(db: AsyncSession, user: User) -> list[str]:
+    """用户的角色码列表（user_roles + roles join）。"""
+    stmt = select(Role.code).join(UserRole, UserRole.role_id == Role.id).where(
+        UserRole.user_id == user.id)
+    return [r for (r,) in (await db.execute(stmt)).all()]
+
+
+async def list_role_permissions(db: AsyncSession) -> dict[str, list[str]]:
+    """全部角色 → 权限码集合（启动缓存用；角色变更时重新加载）。"""
+    stmt = (select(Role.code, Permission.code)
+            .join(RolePermission, RolePermission.role_id == Role.id)
+            .join(Permission, Permission.id == RolePermission.permission_id))
+    mapping: dict[str, list[str]] = {}
+    for role_code, perm_code in (await db.execute(stmt)).all():
+        mapping.setdefault(role_code, []).append(perm_code)
+    return mapping
+
+
+async def create_user(db: AsyncSession, username: str, password_hash: str,
+                      role_code: str, display_name: str = "") -> User:
+    """创建用户并绑定角色。"""
+    user = User(username=username, password_hash=password_hash,
+                display_name=display_name or username)
+    db.add(user)
+    await db.flush()
+    role = (await db.execute(select(Role).where(Role.code == role_code))).scalar_one()
+    db.add(UserRole(user_id=user.id, role_id=role.id))
+    await db.flush()
+    return user
+
+
+async def list_users(db: AsyncSession) -> list[dict[str, Any]]:
+    """用户列表（含角色，不含任何密码信息）。"""
+    users = (await db.execute(select(User).order_by(User.id))).scalars().all()
+    role_stmt = (select(UserRole.user_id, Role.code, Role.name)
+                 .join(Role, Role.id == UserRole.role_id))
+    role_map: dict[int, list[dict[str, str]]] = {}
+    for uid, code, name in (await db.execute(role_stmt)).all():
+        role_map.setdefault(uid, []).append({"code": code, "name": name})
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "display_name": u.display_name,
+            "is_active": u.is_active,
+            "roles": role_map.get(u.id, []),
+            "created_at": u.created_at.isoformat(),
+        }
+        for u in users
+    ]
+
+
+async def set_user_role(db: AsyncSession, user_id: int, role_code: str) -> bool:
+    """替换用户角色（单角色模型，多角色表结构天然支持未来扩展）。"""
+    user = await get_user(db, user_id)
+    if user is None:
+        return False
+    role = (await db.execute(select(Role).where(Role.code == role_code))).scalar_one_or_none()
+    if role is None:
+        return False
+    old = (await db.execute(select(UserRole).where(UserRole.user_id == user_id))).scalars().all()
+    for ur in old:
+        await db.delete(ur)
+    db.add(UserRole(user_id=user_id, role_id=role.id))
+    await db.flush()
+    return True
+
+
+async def write_audit_log(db: AsyncSession, action: str, user_id: int | None,
+                          object_type: str = "", object_id: str = "",
+                          result: str = "success", detail: dict | None = None,
+                          business_ref: str = "") -> None:
+    """
+    写操作日志。detail 白名单化：只放操作摘要，调用方不得传入密码/Key/全文。
+    独立短事务由调用方保证；写日志失败不阻断业务（捕获并记 logger）。
+    """
+    try:
+        db.add(AuditLog(
+            user_id=user_id, action=action,
+            object_type=object_type, object_id=str(object_id)[:64],
+            result=result, detail=detail or {}, business_ref=business_ref[:64]))
+        await db.flush()
+    except Exception:  # noqa: BLE001
+        logger.exception("写操作日志失败 action=%s", action)
 
 
 # ============================== 会话与消息 ==============================
@@ -37,15 +169,20 @@ async def get_conversation(db: AsyncSession, session_id: str) -> Conversation | 
     return (await db.execute(select(Conversation).where(Conversation.id == session_id))).scalar_one_or_none()
 
 
-async def create_conversation(db: AsyncSession, title: str) -> Conversation:
-    conv = Conversation(id=new_session_id(), title=(title or "新会话")[:64])
+async def create_conversation(db: AsyncSession, title: str,
+                              user_id: int | None = None) -> Conversation:
+    conv = Conversation(id=new_session_id(), title=(title or "新会话")[:64], user_id=user_id)
     db.add(conv)
     await db.flush()
     return conv
 
 
-async def list_conversations(db: AsyncSession) -> list[dict[str, Any]]:
-    """会话列表（按 updated_at 倒序），含消息数与最近一次模式。"""
+async def list_conversations(db: AsyncSession, user_id: int | None = None) -> list[dict[str, Any]]:
+    """会话列表（按 updated_at 倒序），含消息数与最近一次模式。
+
+    阶段5：传入 user_id 时只返回该用户的会话（普通用户隔离）；
+    user_id=None（如内部调用）不过滤。
+    """
     stmt = (
         select(
             Conversation.id,
@@ -59,6 +196,8 @@ async def list_conversations(db: AsyncSession) -> list[dict[str, Any]]:
         .group_by(Conversation.id)
         .order_by(Conversation.updated_at.desc())
     )
+    if user_id is not None:
+        stmt = stmt.where(Conversation.user_id == user_id)
     rows = (await db.execute(stmt)).all()
     return [
         {

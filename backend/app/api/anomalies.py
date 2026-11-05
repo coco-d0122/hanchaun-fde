@@ -5,15 +5,17 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Path
+from fastapi import APIRouter, Depends, Path
 
+from app.api.deps import require_permission
 from app.db import repo
 from app.db.session import session_factory
 from app.errors import anomaly_not_found
 
-router = APIRouter(prefix="/api/anomalies", tags=["anomalies"])
+router = APIRouter(prefix="/api/anomalies", tags=["anomalies"],
+                   dependencies=[Depends(require_permission("anomaly:read"))])
 
 
 @router.get("")

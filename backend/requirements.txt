@@ -17,6 +17,11 @@ pydantic>=2.6
 pydantic-settings>=2.2
 python-dotenv>=1.0
 
+# 认证（阶段5第一批：JWT + bcrypt + SSR 模板）
+PyJWT>=2.8
+bcrypt>=4.1
+jinja2>=3.1
+
 # 检索与规则引擎（阶段3同款）
 numpy>=1.26
 requests>=2.31
