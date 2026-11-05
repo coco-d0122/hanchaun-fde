@@ -207,6 +207,9 @@ curl -b jar -H 'X-Requested-With: XMLHttpRequest' -H 'Content-Type: application/
 ## 十二、测试运行方式
 
 ```bash
+# 静态检查（CI 第一步；期望 All checks passed）
+ruff check app scripts tests
+
 # 全量（约 50 秒，含 30 条评测）
 pytest -q
 
@@ -222,7 +225,7 @@ python scripts/run_agent_eval.py            # 30 条用例，退出码非 0 即�
 python scripts/run_agent_eval.py --only 8,9,10
 ```
 
-当前基线：**单元 + 集成 49 项、Agent 深度回归 83 项、评测 30 条用例 149 项契约断言，全部通过**。
+当前基线：**ruff 0 error、单元 + 集成 49 项、Agent 深度回归 83 项、评测 30 条用例 149 项契约断言，全部通过**。
 CI（`.github/workflows/ci.yml`）在每次 push/PR 跑同一套；CI 失败不代表验收通过，只代表不能合并。
 
 ## 十三、Docker 启动方式
