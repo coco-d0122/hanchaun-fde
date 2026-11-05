@@ -1140,6 +1140,7 @@ ACTION_LABELS: dict[str, str] = {
     "user_role_change": "角色变更",
     "flag_update": "风险标记",
     "anomaly_review": "异常复核",
+    "agent_analysis": "Agent 分析",
 }
 
 
@@ -1198,3 +1199,94 @@ async def purge_old_audit_logs(db: AsyncSession, retention_days: int) -> int:
     result = await db.execute(
         delete(AuditLog).where(AuditLog.created_at < cutoff))
     return int(result.rowcount or 0)
+
+
+# ============================== Agent 任务与调用明细（阶段6） ==============================
+
+async def create_agent_task(db: AsyncSession, state: Any) -> None:
+    """任务开账（模型无写权：只由执行器/编排层调用）。"""
+    from app.db.models import AgentTask
+
+    db.add(AgentTask(
+        task_id=state.task_id, session_id=state.session_id, user_id=state.user_id,
+        intent=state.intent, current_step=state.current_step,
+        validation_status=state.validation_status, anomaly_status=state.anomaly_status,
+        status="running"))
+    await db.flush()
+
+
+async def update_agent_task(db: AsyncSession, state: Any) -> None:
+    """把状态机快照写回账本（每次工具成功后同步一次）。"""
+    from app.db.models import AgentTask
+
+    finished = datetime.utcnow() if state.status != "running" else None
+    await db.execute(
+        update(AgentTask).where(AgentTask.task_id == state.task_id).values(
+            current_step=state.current_step,
+            data_queried=state.data_queried,
+            config_checked=state.config_checked,
+            validation_status=state.validation_status,
+            anomaly_status=state.anomaly_status,
+            evidence_refs=state.evidence_refs,
+            review_required=state.review_required,
+            review_status=state.review_status,
+            report_status=state.report_status,
+            tool_call_count=state.tool_call_count,
+            status=state.status,
+            result_digest=state.result_digest,
+            finished_at=finished,
+        ))
+
+
+async def add_agent_tool_call(db: AsyncSession, task_id: str, seq: int, tool_name: str,
+                              input_digest: str, output_digest: str, success: bool,
+                              error_code: str | None, duration_ms: int) -> None:
+    """调用明细（input/output 摘要截断：敏感信息类型上进不来）。"""
+    from app.db.models import AgentToolCall
+
+    db.add(AgentToolCall(
+        task_id=task_id, seq=seq, tool_name=tool_name,
+        input_digest=(input_digest or "")[:512],
+        output_digest=(output_digest or "")[:1024],
+        success=success, error_code=error_code, duration_ms=duration_ms))
+    await db.flush()
+
+
+async def get_agent_task_detail(db: AsyncSession, task_id: str) -> dict[str, Any] | None:
+    """任务详情（含调用轨迹）——排查"卡在哪一步、哪个工具、什么错误"用。"""
+    from app.db.models import AgentTask, AgentToolCall
+
+    task = (await db.execute(
+        select(AgentTask).where(AgentTask.task_id == task_id))).scalar_one_or_none()
+    if task is None:
+        return None
+    calls = (await db.execute(
+        select(AgentToolCall).where(AgentToolCall.task_id == task_id)
+        .order_by(AgentToolCall.seq))).scalars().all()
+    return {
+        "task_id": task.task_id,
+        "session_id": task.session_id,
+        "user_id": task.user_id,
+        "intent": task.intent,
+        "status": task.status,
+        "current_step": task.current_step,
+        "data_queried": task.data_queried,
+        "config_checked": task.config_checked,
+        "validation_status": task.validation_status,
+        "anomaly_status": task.anomaly_status,
+        "review_required": task.review_required,
+        "review_status": task.review_status,
+        "report_status": task.report_status,
+        "tool_call_count": task.tool_call_count,
+        "evidence_refs": task.evidence_refs or [],
+        "result_digest": task.result_digest or {},
+        "created_at": task.created_at.isoformat(),
+        "finished_at": task.finished_at.isoformat() if task.finished_at else None,
+        "tool_calls": [
+            {"seq": c.seq, "tool_name": c.tool_name, "success": c.success,
+             "error_code": c.error_code, "duration_ms": c.duration_ms,
+             "input_digest": c.input_digest, "output_digest": c.output_digest,
+             "created_at": c.created_at.isoformat()}
+            for c in calls
+        ],
+    }

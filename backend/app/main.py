@@ -24,8 +24,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import (admin, anomalies, audit, auth, chat, kb, logs, prompts,
-                     sessions, users)
+from app.api import (admin, agent, anomalies, audit, auth, chat, kb, logs,
+                     prompts, sessions, users)
 from app.core.config import get_settings
 from app.core.embedder import build_embedder
 from app.core.llm import call_llm
@@ -152,8 +152,8 @@ def _build_retriever(cfg, entries: list) -> HybridRetriever:  # noqa: ANN001（S
 
 app = FastAPI(
     title="瀚川工业园能耗异常定位智能体",
-    version="0.8.0",
-    description="阶段5第五批：系统操作日志 + 全链路联调（阶段5 收口）",
+    version="0.9.0",
+    description="阶段6：Agent 工具调用（7 工具 + 五道闸 + 任务账本）",
     lifespan=lifespan,
 )
 
@@ -162,6 +162,7 @@ app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(sessions.router)
 app.include_router(anomalies.router)
+app.include_router(agent.router)
 app.include_router(users.router)
 app.include_router(kb.router)
 app.include_router(prompts.router)

@@ -1,8 +1,8 @@
-# 瀚川工业园 · Web 后端与聊天界面（阶段4 + 阶段5 全五批）
+# 瀚川工业园 · Web 后端（阶段4 + 阶段5 全五批 + 阶段6 Agent）
 
-基于阶段3原型核心模块（检索 / 规则引擎 / Guardrail 原样迁移）构建的 FastAPI + SQLite + SSE 流式聊天系统，
-含登录鉴权与 RBAC（一批）、管理后台与知识库（二批）、提示词版本化（三批）、
-对话与异常审计（四批）、操作日志与联调（五批）。
+基于阶段3原型核心模块（检索 / 规则引擎 / Guardrail 原样迁移）构建的 FastAPI + SQLite + SSE 系统：
+登录鉴权与 RBAC（一批）、管理后台与知识库（二批）、提示词版本化（三批）、
+对话与异常审计（四批）、操作日志与联调（五批）、Agent 工具调用（阶段6）。
 
 ## 运行
 
@@ -61,6 +61,8 @@ INIT_PASSWORD='用户密码'  .venv/Scripts/python -m app.init_admin --username 
 | POST | `/api/audit/flags` | 添加风险标记（`audit:flag:write` + CSRF） |
 | PATCH | `/api/audit/flags/{id}` | 更新标记状态（待处理/已处理/已驳回） |
 | GET | `/api/anomalies/{id}/reviews` | 人工复核记录（只读；本阶段恒为空） |
+| POST | `/api/agent/analyze` | Agent 分析（SSE：task/status/tool_result/token/citations/done） |
+| GET | `/api/agent/tasks/{id}` | Agent 任务账本 + 调用轨迹 |
 | GET | `/api/health` | 健康检查（知识库 / LLM 状态） |
 | GET | `/login` + `/` | 登录页 + 聊天页（未登录 302 跳登录） |
 | GET | `/admin` → `/admin/dashboard` | 管理后台入口（工作台） |
@@ -92,6 +94,12 @@ app/
 ├─ services/chat_service.py   # 双模式 SSE 编排（状态机式分步）
 ├─ services/kb_service.py     # 知识库上传流水线 / 影子重建原子切换 / 种子化
 ├─ services/prompt_service.py # 提示词快照读取（30s 缓存）/ 编辑 / 恢复 / 硬约束追加
+├─ agent/specs.py       # 7 个工具的 Function Calling 声明 + 权限/前置条件/复核岗位映射
+├─ agent/tools.py       # 7 个原子工具实现（只读 + 一个"只增不改"的复核请求）
+├─ agent/executor.py    # 五道闸 + 防循环预算 + 同参缓存 + 调用留痕
+├─ agent/state.py       # 任务状态机（门禁的依据，模型无写权）
+├─ agent/loop.py        # 双通道编排：剧本式确定性执行 / LLM 自由循环 + SSE
+scripts/agent_selftest.py  # 阶段6 三场景自测（16 项断言，可作 CI）
 ├─ core/default_prompts.py    # 默认模板种子（15 条 QA 规则 + 7 条异常分析规则）
 ├─ templates/           # Jinja2 管理后台模板（admin_base / kb / prompts）
 ├─ core/                # 阶段3原样迁移的 11 个核心模块（config 改 pydantic-settings，
@@ -187,6 +195,42 @@ PUT 保存 → 插入新版本 + 移动指针 + 立即失效缓存 → 下一个
   （实测对全量日志 grep `testpass123 / password_hash / api_key / sk-` 均为 0 命中）。
 - 保留策略：`LOG_RETENTION_DAYS=90`（配置文件项），启动时按保留天数清理过期日志并记条数。
 - 全链路联调与逐条验收证据见仓库根目录《瀚川工业园_阶段5_验收自测记录_v1.0.md》。
+
+## Agent 工具调用（阶段6）
+
+双通道：知识/制度问题走阶段4 直达 RAG（不进循环，成本不变）；分析/定位/排查问题走 Agent 通道。
+
+**7 个工具**（注册表里没有的，模型幻想出来只会得到 `UNKNOWN_TOOL`）：
+`query_energy_data` / `get_meter_config`（含拓扑）/ `validate_meter_data` /
+`detect_energy_anomaly` / `search_energy_knowledge` / `generate_anomaly_report` /
+`request_human_review`（只增不改）。
+**不存在的工具**：设备控制、改计量数据、租户结算、异常定性、复核签核——这是"三权分立"的物理落地。
+
+**五道闸**（每步 tool_call 依次过，任一不过即拒绝并回传结构化错误）：
+权限码 → 数据范围（scope 预留）→ 前置条件（读任务状态机）→ 参数校验 → 输出闸（`_trace` + 证据编号签发）。
+
+**门禁的物理性**：
+- `detect_energy_anomaly` 前置 `validation_status == passed` → 校验不过拿不到检测结果；
+- `generate_anomaly_report` 的 status 枚举只有 `draft / pending_check`，参数改不成 confirmed；
+  正文跑 NumberTrace，数值不在证据里整篇退回；
+- `request_human_review` 校验 evidence_ids 必须存在于本任务证据库（防编造编号）；
+- 状态机 `review_required=true` 但模型没调 HR 时，**编排层兜底补发**一条请求。
+
+**防循环**：总调用 12 步 / 单工具 3 次 / 同参重复直接返回缓存 / 180 秒预算。
+
+**离线可跑**：没有 LLM_API_KEY 时，先尝试 Function Calling（失败即回落）→ 执行确定性剧本
+（工具链、门禁、状态机、留痕全部真实），只有最后一段解释文字由确定性摘要器生成。
+摘要同样过 NumberTrace：实测 `passed=true, checked=22, unmatched=[]`。
+
+**留痕**：`agent_tasks`（状态机快照）+ `agent_tool_calls`（每步输入/输出摘要、错误码、耗时）
++ `audit_logs(action=agent_analysis, business_ref=task_id)` + messages/ citations，四者用 task_id 串成证据链。
+
+**自测**：
+```bash
+cd backend && ../.venv/Scripts/python scripts/agent_selftest.py
+# 16 项断言全通过：直达/Agent 双通道、校验拦截检测、强制复核、报告状态上限、
+# NumberTrace、账本回查、跳过校验被物理拒绝（含重复请求幂等）、UNKNOWN_TOOL、SCOPE_DENIED
+```
 
 ## 边界声明（当前明确不做）
 

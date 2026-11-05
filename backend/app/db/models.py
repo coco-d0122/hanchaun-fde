@@ -377,3 +377,56 @@ class ReviewRecord(Base):
     reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reviewed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     status: Mapped[str] = mapped_column(String(16), default="submitted")
+
+
+# ==============================================================================
+# 阶段6：Agent 任务账本与工具调用明细（模型无写权，只由执行器写入）
+# ==============================================================================
+
+class AgentTask(Base):
+    """Agent 任务账本 agent_tasks。
+
+    status: running / completed / budget_exceeded / failed
+    状态字段只由工具执行器在"工具成功执行后"写入——模型没有任何写状态的通道
+    （它只能发起 tool_call，状态变更逻辑在工具实现内部），这是门禁的依据。
+    """
+
+    __tablename__ = "agent_tasks"
+
+    task_id: Mapped[str] = mapped_column(String(32), primary_key=True)   # TASK-<uuid12>
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    intent: Mapped[str] = mapped_column(String(16), default="anomaly_analysis")
+    current_step: Mapped[str] = mapped_column(String(32), default="init")
+    data_queried: Mapped[bool] = mapped_column(Boolean, default=False)
+    config_checked: Mapped[bool] = mapped_column(Boolean, default=False)
+    validation_status: Mapped[str] = mapped_column(String(16), default="not_run")
+    anomaly_status: Mapped[str] = mapped_column(String(16), default="not_run")
+    evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    review_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    review_status: Mapped[str] = mapped_column(String(16), default="none")
+    report_status: Mapped[str] = mapped_column(String(16), default="none")
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    result_digest: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AgentToolCall(Base):
+    """工具调用明细 agent_tool_calls（失败可定位：卡在哪一步、哪个工具、什么错误）。"""
+
+    __tablename__ = "agent_tool_calls"
+    __table_args__ = (Index("ix_atc_task_seq", "task_id", "seq"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("agent_tasks.task_id", ondelete="CASCADE"), index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=1)
+    tool_name: Mapped[str] = mapped_column(String(64))
+    input_digest: Mapped[str] = mapped_column(String(512), default="")
+    output_digest: Mapped[str] = mapped_column(String(1024), default="")
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

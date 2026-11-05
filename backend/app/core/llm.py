@@ -288,3 +288,60 @@ async def call_llm_stream(
         raise LLMError(f"模型响应超时（{cfg.llm_timeout}s），请重试") from exc
     except httpx.HTTPError as exc:
         raise LLMError(f"模型网络异常：{exc}") from exc
+
+
+async def call_llm_tools(
+    messages: list[dict],
+    tools: list[dict],
+    cfg: Settings,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    timeout: int | None = None,
+) -> dict:
+    """
+    Function Calling 单轮调用（阶段6 Agent 循环用）。
+
+    返回 {"content": str, "tool_calls": [{"id","name","arguments"(dict)}]}。
+    无 Key / provider=mock 时抛 LLMError——由 Agent 循环回落到"剧本式确定性执行"，
+    离线环境仍能完整演示工具链（这与阶段4 mock 降级是同一思路）。
+    """
+    provider = (cfg.llm_provider or "openai").lower()
+    if provider == "mock" or not cfg.llm_api_key:
+        raise LLMError("未配置可用大模型，Agent 使用剧本式确定性执行")
+
+    url = f"{cfg.llm_base_url}/chat/completions"
+    headers = {"Authorization": f"Bearer {cfg.llm_api_key}",
+               "Content-Type": "application/json"}
+    payload = {
+        "model": cfg.llm_model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+        "temperature": cfg.llm_temperature if temperature is None else temperature,
+        "max_tokens": cfg.llm_max_tokens if max_tokens is None else max_tokens,
+        "stream": False,
+    }
+    async with httpx.AsyncClient(timeout=timeout or cfg.llm_timeout) as client:
+        try:
+            resp = await client.post(url, headers=headers, json=payload)
+        except httpx.HTTPError as exc:
+            raise LLMError(f"Agent LLM 网络异常：{exc}") from exc
+
+    if resp.status_code != 200:
+        raise LLMError(f"Agent LLM 调用失败（{resp.status_code}）：{resp.text[:200]}")
+    try:
+        msg = resp.json()["choices"][0]["message"]
+    except (KeyError, IndexError, ValueError) as exc:
+        raise LLMError(f"Agent LLM 响应结构异常：{resp.text[:200]}") from exc
+
+    calls: list[dict] = []
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        raw_args = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+        except json.JSONDecodeError:
+            args = {"__raw__": raw_args}
+        calls.append({"id": tc.get("id") or "", "name": fn.get("name") or "",
+                      "arguments": args})
+    return {"content": (msg.get("content") or "").strip(), "tool_calls": calls}
