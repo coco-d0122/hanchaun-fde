@@ -129,6 +129,12 @@ async def main() -> int:
                 db, task_id=r.state.task_id, decision_round=1, limit=200)
             by_tool = await repo.list_agent_execution_logs(
                 db, task_id=r.state.task_id, tool_name="validate_meter_data", limit=50)
+            by_user = await repo.list_agent_execution_logs(
+                db, user_id=1, limit=200)
+            from datetime import datetime
+            # 模型用 utcnow() 落库（naive UTC），日期筛选也按 UTC 当天
+            by_date = await repo.list_agent_execution_logs(
+                db, date_from=datetime.utcnow().date().isoformat(), limit=200)
     items = logs["items"]
     decisions = [x for x in items if x["kind"] == "decision"]
     tool_rows = [x for x in items if x["kind"] == "tool"]
@@ -142,6 +148,9 @@ async def main() -> int:
     check("按轮次筛选生效", by_round["total"] > 0 and
           all(x["decision_round"] == 1 for x in by_round["items"]))
     check("按工具筛选生效", by_tool["total"] == 1)
+    check("按用户筛选生效", by_user["total"] > 0
+          and all(x["user_id"] == 1 for x in by_user["items"]))
+    check("按时间筛选生效", by_date["total"] >= by_user["total"])
     import re
     log_text = json.dumps(items, ensure_ascii=False).lower()
     check("日志不含密钥/密码/隐藏推理",

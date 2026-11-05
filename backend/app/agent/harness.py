@@ -201,7 +201,16 @@ class HarnessRunner(AgentRunner):
                                    "top_k": 3}}]
         if r == 4:
             if self.intent == "meter_question":
-                return self._offline_answer()       # 场景C：不生成报告
+                # 场景C：不生成报告；存在强制复核条件时先调用复核工具
+                # 场景C 不会生成报告草稿（没有暂停点），因此无论是否开启确认模式，
+                # 强制复核条件成立时都必须调用复核工具。
+                if self.state.review_required and self.state.review_status != "pending":
+                    return [{"name": "request_human_review",
+                             "arguments": {"reason": "multiplier_anomaly",
+                                           "related_anomaly_id": self.anomaly_id,
+                                           "evidence_ids": [],
+                                           "note": "倍率变更与生效时间存疑，需人工核查"}}]
+                return self._offline_answer()
             calls = [{"name": "generate_anomaly_report",
                       "arguments": {"anomaly_id": self.anomaly_id,
                                     "focus": self.question[:80]}}]
@@ -288,6 +297,51 @@ class HarnessRunner(AgentRunner):
                 async with db.begin():
                     await repo.update_agent_task(db, self.state)
         return result
+
+    def _offline_answer(self) -> str:
+        """
+        按场景定制离线解释文字（有真实 LLM 时由模型生成）。
+
+        ★ 刻意不写"共 N 条""编号 xxx"这类派生数字：它们不是证据里的原始值，
+          写出来会被 NumberTrace 判为未溯源。编号类信息留在任务账本里查。
+        """
+        knowledge = [e for e in self.ctx.evidence
+                     if e["source_type"] == "knowledge"]
+
+        if self.intent == "knowledge":
+            lines = ["【离线确定性摘要｜未调用大模型，配置 LLM_API_KEY 后由模型生成解释】", ""]
+            if not knowledge:
+                lines.append("当前知识库中未找到相关规定，建议补充制度文档或换一种问法。")
+                return "\n".join(lines)
+            lines.append("根据园区能源管理知识库，需要检查的信息如下：")
+            for e in knowledge[:3]:
+                lines.append(f"- {e['source_file']}：{e['excerpt'][:110]}")
+            lines.append("")
+            lines.append("以上均来自检索到的知识片段；未查询任何能耗数据，"
+                         "也未执行异常检测或创建人工复核请求。")
+            return "\n".join(lines)
+
+        if self.intent == "meter_question":
+            lines = ["【离线确定性摘要｜未调用大模型，配置 LLM_API_KEY 后由模型生成解释】", ""]
+            lines.append("① 已确认事实（工具返回）：该电表存在倍率配置变化，"
+                         "配置版本、生效时间与能耗数据可从任务账本回查。")
+            lines.append("② 判断：**不能仅凭倍率变化认定电表损坏**。"
+                         "可能原因分为三类，均属「可能/待核实」，需人工核对：")
+            lines.append("   - 配置录入或变更单错误（倍率被误录、生效时间存疑）；")
+            lines.append("   - 计量口径变化（倍率折算导致示值跳变，设备本身未必异常）；")
+            lines.append("   - 真实设备故障（需现场校验互感器、表计与接线）。")
+            lines.append("③ 证据不足：数据源未提供配置变更工单与设备台账，"
+                         "无法通过数据单独区分以上三类，明确提示人工核查。")
+            if self.state.review_status == "pending":
+                lines.append("④ 已提交人工复核（AI 草稿，不构成最终结论）。")
+            else:
+                lines.append("④ 存在强制复核条件，已记录待人工核查事项。")
+            if knowledge:
+                lines.append("⑤ 知识依据：" + "；".join(
+                    e["source_file"] for e in knowledge[:2]))
+            return "\n".join(lines)
+
+        return super()._offline_answer()
 
     # ---------------- 取消检测 ----------------
     async def _cancelled(self) -> bool:

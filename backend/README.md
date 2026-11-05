@@ -284,6 +284,16 @@ cd backend && ../.venv/Scripts/python scripts/agent_selftest.py
 - **确认提交 ≠ 确认异常原因 ≠ 签核**：不写 `review_records`，不改异常状态到 confirmed/closed。
 - 自测：`scripts/confirmation_selftest.py`（19 项全通过）；回归 Harness 25 项 + 阶段6 16 项。
 
+## 阶段7 三场景联调与最终交付（第三批）
+
+- `scripts/harness_scenarios.py`：场景 A（知识问答只调检索）、B（并行只读→校验→检索→
+  报告草稿→暂停→确认→复核请求）、C（倍率问答不生成报告、强制复核、不认定电表损坏）、
+  D（校验通过时 detect 在 validate 之后执行），自动打印每轮决策/工具/返回/最终回答。
+- 全量回归 4 套共 **83 项断言全通过**：agent_selftest 16 + harness_selftest 27 +
+  confirmation_selftest 19 + harness_scenarios 21；`node --check` 与后端导入通过。
+- 10 项交付清单（框架选型、架构图、目录结构、完整代码位置、日志表模型、SSE/确认机制、
+  三场景轨迹、测试与运行说明）见仓库根目录《瀚川工业园_阶段7_交付清单与运行说明_v1.0.md》。
+
 ## 边界声明（当前明确不做）
 
 真实计量系统接入、任何修改能耗数据或异常状态的写接口、多租户数据域、
