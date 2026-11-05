@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hanchuan-energy-agent"
+version = "1.0.0"
+description = "瀚川工业园能耗监测与异常定位智能体（试点版）：RAG 问答 + 只读能耗工具 + Harness 执行循环"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "瀚川工业园能耗智能体项目组" }]
+keywords = ["energy", "agent", "rag", "fastapi", "industrial"]
+
+# 依赖说明见 docs/deployment.md；版本用区间而不是死锁，锁文件不适用于本试点规模
+dependencies = [
+    "fastapi>=0.110,<1.0",
+    "uvicorn[standard]>=0.29,<1.0",
+    "sqlalchemy>=2.0,<3.0",
+    "aiosqlite>=0.20,<1.0",
+    "httpx>=0.27,<1.0",
+    "pydantic>=2.6,<3.0",
+    "pydantic-settings>=2.2,<3.0",
+    "python-dotenv>=1.0,<2.0",
+    "PyJWT>=2.8,<3.0",
+    "bcrypt>=4.1,<6.0",
+    "jinja2>=3.1,<4.0",
+    "python-multipart>=0.0.9,<1.0",
+    "pypdf>=4.0,<7.0",
+    "numpy>=1.26,<3.0",
+    "jieba>=0.42,<1.0",
+    "rank-bm25>=0.2.2,<1.0",
+    "faiss-cpu>=1.7.4,<2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Repository = "https://github.com/coco-d0122/hanchaun-fde"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "prototype", "__pycache__"]

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 单元 / 集成 / Agent / 评测
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      # CI 不配置任何真实 Key：全部走离线模拟模式，结果可复现
+      LLM_PROVIDER: mock
+      LLM_API_KEY: ""
+      EMBEDDING_PROVIDER: hash
+      EVAL_CLOCK_DATE: "2026-10-24"
+      RUN_AGENT_EVAL: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: 语法检查（全量编译）
+        run: python -m compileall -q app scripts tests
+
+      - name: 单元与集成测试
+        run: pytest tests/unit tests/integration -q
+
+      - name: Agent 流程回归（4 套自测，83 项断言）
+        run: pytest tests/agent -q
+
+      - name: 评测集校验 + 30 条用例全量执行
+        run: pytest tests/evaluation -q
+
+      - name: 生成评测报告（供下载）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval/last_eval_report.json
+          if-no-files-found: warn
+          retention-days: 30

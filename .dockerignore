@@ -1,0 +1,21 @@
+# 构建镜像时排除本地环境与运行期数据：镜像要可复现，不能把开发机的 .venv 和真实库带进去
+.venv/
+venv/
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.workbuddy/
+prototype/
+docs/
+tests/
+uploads/
+.cache/
+hanchuan.db*
+.env
+.env.local
+.jwt_secret
+*.log
+*.tmp

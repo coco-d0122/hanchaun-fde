@@ -5,24 +5,25 @@ __pycache__/
 .venv/
 venv/
 env/
+.pytest_cache/
+.ruff_cache/
 
 # ---- 本地配置（含密钥，禁止入库）----
 .env
 .env.local
+.jwt_secret
 
-# ---- 原型运行产物（可重新生成）----
+# ---- 运行期数据（可重新生成，禁止入库）----
+# SQLite 主库与 WAL：里面有真实账号、会话、审计记录
+/hanchuan.db
+/hanchuan.db-wal
+/hanchuan.db-shm
+/.cache/
+/uploads/
+
+# ---- 阶段3原型运行产物 ----
 prototype/.cache/
 prototype/output/
-
-# ---- 阶段4后端运行产物（可重新生成）----
-backend/.cache/
-backend/hanchuan.db
-backend/hanchuan.db-wal
-backend/hanchuan.db-shm
-backend/.jwt_secret
-
-# ---- 阶段5第二批：用户上传的原始文档（运行时数据，不入库）----
-backend/uploads/
 
 # ---- 编辑器 / 系统 ----
 .vscode/

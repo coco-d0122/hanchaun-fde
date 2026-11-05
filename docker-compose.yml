@@ -1,0 +1,42 @@
+# 试点部署：单实例 + 本地卷（SQLite / 索引缓存 / 上传文件都在卷里）
+# 冒烟：docker compose up -d && curl -s localhost:8000/api/health
+services:
+  app:
+    build: .
+    image: hanchuan-energy-agent:1.0.0
+    container_name: hanchuan-agent
+    restart: unless-stopped
+    ports:
+      # 只监听本机：试点阶段通过内网反向代理暴露，避免直接公网可达
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      # 容器内必须监听 0.0.0.0，否则宿主机映射不进来
+      SERVING_HOST: 0.0.0.0
+      DB_URL: sqlite+aiosqlite:////data/hanchuan.db
+      CACHE_DIR: /data/cache
+      UPLOADS_DIR: /data/uploads
+    volumes:
+      - hanchuan-data:/data
+    # 试点规模（240 表、15 分钟采集、并发个位数）不需要更多资源，先给保守上限
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  hanchuan-data:
