@@ -94,7 +94,8 @@ async def main() -> int:
 
             # ================= 场景2：倍率异常分析（Agent 通道） =================
             r = await client.post("/api/agent/analyze",
-                                  json={"question": "帮我分析 M-002 为什么用电量突然增加？",
+                                  json={"question": "帮我分析 M-002 为什么用电量突然增加，"
+                                                     "并生成异常分析报告",
                                         "anomaly_id": "AN-20261023-0001"},
                                   headers={"X-Requested-With": "XMLHttpRequest"})
             ev = parse_sse(r.text)

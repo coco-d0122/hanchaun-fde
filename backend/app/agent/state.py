@@ -28,6 +28,7 @@ class TaskState:
     anomaly_status: str = "not_run"         # not_run / detected / none
     evidence_refs: list[dict] = field(default_factory=list)
     review_required: bool = False
+    review_reason_hint: str = "final_confirmation"   # 强制复核原因（供编排层选 reason）
     review_status: str = "none"             # none / pending
     report_status: str = "none"             # none / draft / pending_check
     tool_call_count: int = 0
@@ -76,10 +77,14 @@ class TaskState:
             if result.get("has_conflict"):
                 # 版本冲突信号 → 强制需要人工复核（不依赖模型自觉）
                 self.review_required = True
+                if self.review_reason_hint == "final_confirmation":
+                    self.review_reason_hint = "version_conflict"
         elif tool_name == "validate_meter_data":
             ok = bool(result.get("passed"))
             self.validation_status = "passed" if ok else "issues_found"
             self.review_required = self.review_required or bool(result.get("review_required"))
+            if not ok:
+                self.review_reason_hint = self._reason_from_issues(result.get("issues") or [])
         elif tool_name == "detect_energy_anomaly":
             self.anomaly_status = "detected" if result.get("events") else "none"
             if result.get("events"):
@@ -93,6 +98,18 @@ class TaskState:
         if ctx is not None:
             self.evidence_refs = [{"id": e["id"], "source_type": e["source_type"],
                                    "source_file": e["source_file"]} for e in ctx.evidence]
+
+    @staticmethod
+    def _reason_from_issues(issues: list[dict]) -> str:
+        """校验问题 → 复核原因（服务端映射，模型不能指定岗位或原因等级）。"""
+        checks = {i.get("check") for i in issues}
+        if checks & {"data_completeness", "timestamp_order"}:
+            return "data_missing"
+        if checks & {"multiplier_consistency", "config_version_conflict"}:
+            return "multiplier_anomaly"
+        if "unit_consistency" in checks:
+            return "version_conflict"
+        return "insufficient_evidence"
 
     # ---- 序列化 ----
     def snapshot(self) -> dict:

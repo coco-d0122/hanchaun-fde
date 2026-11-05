@@ -298,6 +298,8 @@ class AgentRunner:
         if self.state.review_status == "pending":
             lines.append("⑦ 人工复核：已提交，建议岗位见任务账本。本次分析为 AI 草稿，"
                          "不构成最终结论。")
+        elif self.state.validation_status != "passed":
+            lines.append("⑦ 人工复核：未提交复核请求；当前证据不足，需人工进一步核实。")
         else:
             lines.append("⑦ 人工复核：本任务未触发（证据充分且校验通过）。")
         return "\n".join(lines)

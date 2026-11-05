@@ -94,8 +94,13 @@ class HybridRetriever:
     # 为什么不能只用 RRF 分数判定：RRF 是"排名"函数，只要有候选就一定有分数，
     # 即使问题与知识库毫无关系，向量那一路也会返回 Top10，RRF 分数照样能到 0.03。
     # 所以必须回到原始相似度上判定。
-    HASH_MIN_SCORE = 0.08
+    HASH_MIN_SCORE = 0.12
     SEMANTIC_MIN_SCORE = 0.30
+    # "依据充足"的词汇覆盖率门槛（F-01 修复）：命中词数 / 查询词数。
+    # 实测：7 条制度问答覆盖率 0.43~1.00；3 条陷阱题 0.25~0.30（只命中通用词）。
+    MIN_LEXICAL_COVERAGE = 0.35
+    # 语义兜底路径要求的最低覆盖率：避免"语义分数高但词基本对不上"时放行。
+    MIN_FALLBACK_COVERAGE = 0.25
 
     def __init__(self, cfg: Settings, embedder: BaseEmbedder):
         self.cfg = cfg
@@ -319,33 +324,51 @@ class HybridRetriever:
             ))
         return results
 
+    def evidence_coverage(self, results: list[Retrieved], query: str = "") -> tuple[int, float]:
+        """
+        计算"查询词被证据集合覆盖的程度"，返回 (命中词数, 覆盖率)。
+
+        为什么按"覆盖率"而不是"命中 2 个词"：
+          陷阱题的典型形态是问题里的**通用词**在文档里出现过（园区 / 空调 / 租户），
+          但问题真正问的**限定词**（运行小时 / 功率上限 / 违约金比例）在文档中根本不存在。
+          只数命中个数时，这类问题会被误判为"有依据"（缺陷 F-01：实测命中 2~3 个通用词）。
+          改用"命中词数 / 查询词总数"后，通用词再多也只能占查询词的一小部分。
+
+        证据集合取 Top1 片段：这是一个经过实测的取舍。取 Top-K 并集会抬高陷阱题
+        的覆盖率（3 条陷阱题从 0.25~0.30 抬到 0.50~0.60），因为无关片段里总能
+        找到一两个问题里的通用词；而 Top1 才携带"该问题最相关的那段条款"。
+        分片导致的漏判由渲染层补齐（回答只在命中的片段内引用），不靠放宽门禁。
+        """
+        if not results or not query:
+            return 0, 0.0
+        q_tokens = {t for t in tokenize_zh(normalize_query(query)) if t}
+        if not q_tokens:
+            return 0, 0.0
+        text = results[0].chunk.index_text()
+        hit = sum(1 for t in q_tokens if t in text)
+        return hit, hit / len(q_tokens)
+
     def has_evidence(self, results: list[Retrieved], query: str = "") -> bool:
         """
-        判断检索结果是否足以支撑回答。
+        判断检索结果是否足以支撑回答（缺陷 F-01 修复版）。
 
-        判定规则（二者满足其一即可）：
-          1. 命中了关键词：Top1 片段至少命中 2 个不同的查询词
-          2. 语义足够接近：Top1 的余弦相似度超过该 Embedding 模式的门槛
+        判定规则（按优先级）：
+          1. 词汇覆盖：至少命中 2 个查询词，且覆盖率达到 MIN_LEXICAL_COVERAGE
+             —— 主路径，短文档集上最可靠；
+          2. 语义兜底：覆盖率 ≥ 语义兜底最低覆盖，且 Top1 相似度超过该模式门槛
+             —— 处理同义改写的提问，但两道条件同时成立才算数。
 
-        这一层很重要：没有它，问"今天食堂有什么菜"也会被强行检索出 3 个片段，
-        然后大模型基于无关片段硬编一个答案——这正是我们要杜绝的行为。
+        这一层很重要：没有它，问"每台空调每天最多运行多少小时"也会被强行检索出
+        3 个片段，然后基于无关片段硬编一个"限额"——这正是必须杜绝的幻觉来源。
         """
         if not results:
             return False
+        hit, coverage = self.evidence_coverage(results, query)
+        if hit >= 2 and coverage >= self.MIN_LEXICAL_COVERAGE:
+            return True
+
         top = results[0]
-
-        # 规则 1：要求 Top1 片段至少命中 2 个不同的查询词。
-        # 只命中 1 个词不足以作为依据——问"今天食堂有什么菜"时，"今天"这个词
-        # 恰好出现在某条归属说明里，单靠它就命中会得到完全无关的答案。
-        if query:
-            q_tokens = {t for t in tokenize_zh(normalize_query(query)) if len(t) > 0}
-            if q_tokens:
-                text = top.chunk.index_text()
-                hit = sum(1 for t in q_tokens if t in text)
-                need = 1 if len(q_tokens) == 1 else 2
-                if hit >= need:
-                    return True
-
-        # 规则 2：语义相似度达到该 Embedding 模式的门槛
-        threshold = self.HASH_MIN_SCORE if self.embedder.name.startswith("hash") else self.SEMANTIC_MIN_SCORE
-        return top.vector_score >= threshold
+        threshold = (self.HASH_MIN_SCORE if self.embedder.name.startswith("hash")
+                     else self.SEMANTIC_MIN_SCORE)
+        return hit >= 2 and coverage >= self.MIN_FALLBACK_COVERAGE \
+            and top.vector_score >= threshold

@@ -489,11 +489,14 @@ def search_energy_knowledge(ctx: AgentContext, query: str | None = None,
         raise AgentToolError("KB_NOT_READY", "知识库尚未就绪，无法检索")
     top_k = max(1, min(int(top_k or 3), 3))
     results = retriever.retrieve(query, top_k=top_k)
+    has_evidence = retriever.has_evidence(results, query)
 
     items: list[dict[str, Any]] = []
     for r in results:
-        ev_id = ctx.add_evidence("knowledge", r.chunk.source_file,
-                                 r.chunk.content[:300])
+        # ★ 依据不足时**不登记证据**：证据库是引用与报告的唯一来源，
+        #   把"只是长得像"的片段登记成证据，等于给幻觉发了通行证（缺陷 F-01 的第二处落点）。
+        ev_id = (ctx.add_evidence("knowledge", r.chunk.source_file, r.chunk.content[:300])
+                 if has_evidence else None)
         items.append({
             "chunk_id": r.chunk.chunk_id,
             "source_file": r.chunk.source_file,
@@ -503,12 +506,15 @@ def search_energy_knowledge(ctx: AgentContext, query: str | None = None,
                       "bm25": round(r.bm25_score, 3)},
             "evidence_id": ev_id,
         })
-    has_evidence = retriever.has_evidence(results, query)
     return {
         "has_evidence": bool(has_evidence),
         "results": items,
+        "note": ("依据充足，片段已登记为证据" if has_evidence else
+                 "检索到的片段与问题不匹配（仅命中通用词），未登记为证据，"
+                 "不得据此回答，应明确告知知识库中未找到相关规定"),
         "_trace": {"source": "hybrid_retrieval", "query": query,
-                   "row_count": len(items), "evidence_ids": [i["evidence_id"] for i in items]},
+                   "row_count": len(items),
+                   "evidence_ids": [i["evidence_id"] for i in items if i["evidence_id"]]},
     }
 
 

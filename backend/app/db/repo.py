@@ -1253,6 +1253,48 @@ async def add_agent_tool_call(db: AsyncSession, task_id: str, seq: int, tool_nam
     await db.flush()
 
 
+async def get_latest_agent_task(db: AsyncSession, session_id: str) -> dict[str, Any] | None:
+    """取某个会话里最近一次 Agent 任务（多轮继承用：上一轮分析过哪块表/什么状态）。
+
+    只返回"已结束"的任务：running 的任务状态还没定型，拿来当前置状态会误导门禁。
+    """
+    from app.db.models import AgentTask
+
+    task = (await db.execute(
+        select(AgentTask)
+        .where(AgentTask.session_id == session_id)
+        .where(AgentTask.status.in_(["completed", "budget_exceeded"]))
+        .order_by(AgentTask.created_at.desc())
+        .limit(1))).scalar_one_or_none()
+    if task is None:
+        return None
+    return {
+        "task_id": task.task_id,
+        "session_id": task.session_id,
+        "intent": task.intent,
+        "status": task.status,
+        "validation_status": task.validation_status,
+        "anomaly_status": task.anomaly_status,
+        "review_required": task.review_required,
+        "review_status": task.review_status,
+        "report_status": task.report_status,
+        "evidence_refs": task.evidence_refs or [],
+        "result_digest": task.result_digest or {},
+        "created_at": task.created_at.isoformat(),
+        "meter_id": _meter_from_evidence(task.evidence_refs or []),
+    }
+
+
+def _meter_from_evidence(refs: list[dict[str, Any]]) -> str | None:
+    """从证据引用里回读上一轮的电表号（energy_data 证据的 source_file 是电表列表）。"""
+    for ref in refs:
+        if ref.get("source_type") == "energy_data" and ref.get("source_file"):
+            first = str(ref["source_file"]).split(",")[0].strip()
+            if first:
+                return first
+    return None
+
+
 async def get_agent_task_detail(db: AsyncSession, task_id: str) -> dict[str, Any] | None:
     """任务详情（含调用轨迹）——排查"卡在哪一步、哪个工具、什么错误"用。"""
     from app.db.models import AgentTask, AgentToolCall

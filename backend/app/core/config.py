@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     db_url: str = f"sqlite+aiosqlite:///{(BACKEND_DIR / 'hanchuan.db').as_posix()}"
     history_rounds: int = 6               # 上下文历史轮数（6 组 user+assistant）
     history_char_budget: int = 3000       # 历史上下文总字符预算，超出则从最旧开始截断
+    # 评测时钟（阶段8）：把"今天/昨天/最近"解析成可复现的日期。
+    # 留空 = 用系统日期；只有跑评测/回归时才会配置，生产默认不影响业务语义。
+    eval_clock_date: str = ""
     citation_excerpt_len: int = 120       # 引用摘录截断长度（存库，避免重复存全文）
     serving_host: str = "127.0.0.1"       # C3 默认：仅本机
     serving_port: int = 8000

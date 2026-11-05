@@ -58,7 +58,9 @@ async def main() -> int:
     retriever.build_from_documents(entries)
     perms = ["anomaly:read", "chat:use"]
 
-    def runner(question="帮我分析 M-002 为什么用电量突然增加？",
+    # 阶段8 起：报告只在用户明确要求时生成（"不要假设所有问题都需要调用全部工具"），
+    # 因此本用例的问句里显式要求生成报告，才能覆盖 report 工具与复核链路。
+    def runner(question="帮我分析 M-002 为什么用电量突然增加，并生成异常分析报告？",
                anomaly_id="AN-20261023-0001", **kw):
         return HarnessRunner(question, anomaly_id, None, cfg, retriever, 1, perms, **kw)
 
