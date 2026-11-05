@@ -24,7 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import admin, anomalies, auth, chat, kb, sessions, users
+from app.api import admin, anomalies, auth, chat, kb, prompts, sessions, users
 from app.core.config import get_settings
 from app.core.embedder import build_embedder
 from app.core.llm import call_llm
@@ -69,6 +69,7 @@ async def lifespan(app: FastAPI):
     # ---- 0) 轻量迁移（老库补列）----
     db_file = Path(cfg.db_url.split("///")[-1])
     _ensure_column(db_file, "conversations", "user_id", "INTEGER")
+    _ensure_column(db_file, "messages", "prompt_version_id", "INTEGER")
 
     # ---- 1) 建表 + 自愈 + 异常事件初始化 + 角色/权限种子 ----
     async with engine.begin() as conn:
@@ -83,8 +84,11 @@ async def lifespan(app: FastAPI):
             if seeded:
                 logger.info("异常事件落库：%s 条", seeded)
             await repo.seed_roles_permissions(db)
+            seeded_prompts = await repo.seed_prompt_templates(db)
             app.state.permission_cache = await repo.list_role_permissions(db)
     logger.info("角色/权限种子就绪：%s 个角色", len(app.state.permission_cache))
+    if seeded_prompts:
+        logger.info("提示词模板种子写入：%s 套（qa / anomaly，各生成 v1）", seeded_prompts)
 
     # ---- 2) 内建知识库文档登记（幂等：表非空直接跳过）----
     seeded_docs = await kb_service.seed_builtin_documents(cfg)
@@ -139,8 +143,8 @@ def _build_retriever(cfg, entries: list) -> HybridRetriever:  # noqa: ANN001（S
 
 app = FastAPI(
     title="瀚川工业园能耗异常定位智能体",
-    version="0.5.0",
-    description="阶段5第二批：管理后台（知识库文档管理 + 影子重建原子切换）",
+    version="0.6.0",
+    description="阶段5第三批：AI 提示词管理（版本快照式生效 + 历史恢复 + 消息版本留痕）",
     lifespan=lifespan,
 )
 
@@ -151,6 +155,7 @@ app.include_router(sessions.router)
 app.include_router(anomalies.router)
 app.include_router(users.router)
 app.include_router(kb.router)
+app.include_router(prompts.router)
 app.include_router(admin.router)
 
 

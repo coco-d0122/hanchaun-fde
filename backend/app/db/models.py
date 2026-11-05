@@ -175,6 +175,49 @@ class KnowledgeDocumentVersion(Base):
     document: Mapped[KnowledgeDocument] = relationship(back_populates="versions")
 
 
+class PromptTemplate(Base):
+    """提示词模板主档 prompt_templates（阶段5第三批）。
+
+    code 区分用途（qa / anomaly），current_version_id 指向当前生效版本。
+    指针式设计的意义：改提示词只插入新版本 + 移动指针，历史版本永不修改，
+    任何一条历史回答都能回答"当时用的是哪版提示词"。
+    """
+
+    __tablename__ = "prompt_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)   # qa / anomaly
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(String(256), default="")
+    current_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    versions: Mapped[list["PromptTemplateVersion"]] = relationship(
+        back_populates="template", order_by="PromptTemplateVersion.version_no")
+
+
+class PromptTemplateVersion(Base):
+    """提示词版本 prompt_template_versions（阶段5第三批）。
+
+    版本只增不改：编辑=插入新版本并移动指针；恢复历史=以旧内容生成**新版本号**。
+    """
+
+    __tablename__ = "prompt_template_versions"
+    __table_args__ = (Index("ix_ptv_tpl_version", "template_id", "version_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    template_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("prompt_templates.id", ondelete="CASCADE"))
+    version_no: Mapped[int] = mapped_column(Integer, default=1)
+    content: Mapped[str] = mapped_column(Text)
+    change_note: Mapped[str] = mapped_column(String(256), default="")
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)   # FK users.id
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    template: Mapped[PromptTemplate] = relationship(back_populates="versions")
+
+
 class Conversation(Base):
     """会话表 conversations。阶段5第一批：增加 user_id 归属（用户隔离）。"""
 
@@ -213,6 +256,8 @@ class Message(Base):
     error_info: Mapped[str | None] = mapped_column(Text, nullable=True)  # failed 时的错误 JSON
     # 仅 anomaly 模式助手消息：数值溯源结果
     guardrail_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # 阶段5第三批：本回答使用的提示词版本（审计可回答"当时用的哪版"）
+    prompt_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")

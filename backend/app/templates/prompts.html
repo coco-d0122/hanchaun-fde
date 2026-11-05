@@ -1,0 +1,177 @@
+{% extends "admin_base.html" %}
+{% block title %}AI 提示词管理{% endblock %}
+{% block pagetitle %}AI 提示词管理{% endblock %}
+
+{% block head %}
+<style>
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tab {
+    padding: 7px 16px; border: 1px solid var(--border); border-radius: 6px;
+    background: #fff; cursor: pointer; font-size: 13px;
+  }
+  .tab.active { background: #e8effc; border-color: var(--blue); color: var(--blue-dark); font-weight: 600; }
+  textarea {
+    width: 100%; min-height: 340px; border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 13px;
+    line-height: 1.75; resize: vertical;
+  }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  .meta { color: var(--text-2); font-size: 12.5px; line-height: 1.9; }
+  .hard {
+    background: #fff8e6; border: 1px solid #f0d9a8; border-radius: 6px;
+    padding: 10px 14px; font-size: 12.5px; color: #7a5300; line-height: 1.7; margin-top: 14px;
+  }
+  .versions td:last-child { white-space: nowrap; }
+  .cur { background: #e6f6ec; color: var(--ok); padding: 1px 8px; border-radius: 999px; font-size: 11.5px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="msg" class="msg"></div>
+
+<div class="tabs" id="tabs">
+  {% for code, name in template_codes %}
+  <div class="tab" data-code="{{ code }}">{{ name }}</div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <div class="meta" id="cur-meta">加载中…</div>
+  <textarea id="content" spellcheck="false"></textarea>
+  <div class="row">
+    <input type="text" id="note" placeholder="变更说明（进版本历史，便于回溯）" style="flex:1; min-width:240px;">
+    <span class="meta" id="chars">0 字</span>
+    <button class="btn primary" id="btn-save">保存并生效</button>
+  </div>
+  <div class="hard" id="hard"></div>
+</div>
+
+<div class="card">
+  <div style="font-weight:600; margin-bottom:10px;">版本历史</div>
+  <table class="versions">
+    <thead>
+      <tr><th>版本</th><th>变更说明</th><th>操作人</th><th>时间</th><th>字数</th><th>操作</th></tr>
+    </thead>
+    <tbody id="ver-rows"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="hint">
+    <b>说明</b><br>
+    1. 保存即生成新版本并立即生效：<b>下一个新提问</b>使用新版，正在流式生成的回答不受影响。<br>
+    2. 历史版本不可修改；"恢复"是用旧内容生成<b>新版本号</b>，版本链始终完整。<br>
+    3. 下方黄色区域是<b>代码级硬约束</b>，由系统在渲染时自动追加，改模板无法删除——
+       数值溯源、引用组装、"依据不足"拒答都不读模板。<br>
+    4. 每条回答都会记录所用提示词版本号（消息详情可见），审计可回答"当时用的哪版"。
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+const H = { 'X-Requested-With': 'XMLHttpRequest' };
+const $ = (id) => document.getElementById(id);
+let currentCode = '{{ template_codes[0][0] }}';
+let loadedVersionId = null;
+
+function showMsg(text, ok) {
+  const el = $('msg');
+  el.className = 'msg ' + (ok ? 'ok' : 'err');
+  el.textContent = text;
+  setTimeout(() => { el.className = 'msg'; }, 6000);
+}
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function fmtTime(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '-'; }
+
+function switchTab(code) {
+  currentCode = code;
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.code === code));
+  loadCurrent();
+  loadVersions();
+}
+
+async function loadCurrent() {
+  $('cur-meta').textContent = '加载中…';
+  try {
+    const resp = await fetch(`/api/prompts/${currentCode}`);
+    if (resp.status === 401) { location.href = '/login?next=/admin/prompts'; return; }
+    const data = await resp.json();
+    if (!resp.ok) { showMsg(data.message || '加载失败', false); return; }
+    loadedVersionId = data.version_id;
+    $('content').value = data.content || '';
+    $('cur-meta').innerHTML =
+      `当前生效：<b>v${data.version_no}</b>　变更说明：${esc(data.change_note || '-')}` +
+      `　操作人：${esc(data.created_by_name)}　时间：${fmtTime(data.created_at)}`;
+    $('hard').textContent = '代码追加（不可编辑）：' + (data.hard_constraint || '');
+    updateChars(data.max_chars);
+  } catch (e) { showMsg('加载失败：' + e.message, false); }
+}
+
+function updateChars(max) {
+  $('chars').textContent = `${$('content').value.length} 字 / 上限 ${max || '-'}`;
+}
+
+async function loadVersions() {
+  try {
+    const resp = await fetch(`/api/prompts/${currentCode}/versions`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const rows = (data.items || []).map(v => `
+      <tr>
+        <td>v${v.version_no} ${v.is_current ? '<span class="cur">生效中</span>' : ''}</td>
+        <td>${esc(v.change_note || '-')}</td>
+        <td>${esc(v.created_by_name)}</td>
+        <td>${fmtTime(v.created_at)}</td>
+        <td>${v.chars}</td>
+        <td>${v.is_current ? '-' :
+          `<button class="btn small" onclick="restore(${v.id}, ${v.version_no})">恢复此版</button>`}</td>
+      </tr>`).join('');
+    $('ver-rows').innerHTML = rows || '<tr><td colspan="6" class="empty">暂无版本</td></tr>';
+  } catch (e) { /* 静默 */ }
+}
+
+$('content').addEventListener('input', () => updateChars());
+
+$('btn-save').addEventListener('click', async () => {
+  const btn = $('btn-save');
+  btn.disabled = true; btn.textContent = '保存中…';
+  try {
+    const resp = await fetch(`/api/prompts/${currentCode}`, {
+      method: 'PUT', headers: { ...H, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: $('content').value, change_note: $('note').value }),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.ok) {
+      showMsg(data.message, true);
+      $('note').value = '';
+      loadCurrent(); loadVersions();
+    } else {
+      showMsg(data.message || '保存失败', false);
+    }
+  } catch (e) { showMsg('保存失败：' + e.message, false); }
+  finally { btn.disabled = false; btn.textContent = '保存并生效'; }
+});
+
+async function restore(versionId, versionNo) {
+  if (!confirm(`恢复 v${versionNo} 的内容？将生成一个新版本号（不覆盖历史）。`)) return;
+  try {
+    const resp = await fetch(`/api/prompts/versions/${versionId}/restore`, {
+      method: 'POST', headers: H,
+    });
+    const data = await resp.json();
+    showMsg(data.message || (resp.ok ? '已恢复' : '恢复失败'), resp.ok && data.ok);
+    loadCurrent(); loadVersions();
+  } catch (e) { showMsg('恢复失败：' + e.message, false); }
+}
+
+document.querySelectorAll('.tab').forEach(t =>
+  t.addEventListener('click', () => switchTab(t.dataset.code)));
+
+switchTab(currentCode);
+</script>
+{% endblock %}

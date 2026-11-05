@@ -23,7 +23,8 @@ from app.core.permissions import PERMISSIONS, ROLES, ROLE_PERMISSIONS
 from app.core.rules import AnomalyEvent, detect_all, load_readings, compute_intervals
 from app.db.models import (AnomalyEventRow, AnomalyEvidenceRow, AuditLog, Conversation,
                             KnowledgeDocument, KnowledgeDocumentVersion,
-                            Message, MessageCitation, Permission, Role, RolePermission,
+                            Message, MessageCitation, Permission, PromptTemplate,
+                            PromptTemplateVersion, Role, RolePermission,
                             User, UserRole)
 
 logger = logging.getLogger(__name__)
@@ -249,6 +250,7 @@ async def get_messages(db: AsyncSession, conversation_id: str) -> list[dict[str,
             "status": m.status,                       # 用户消息恒为 None
             "created_at": m.created_at.isoformat(),
             "guardrail_passed": m.guardrail_passed,
+            "prompt_version_id": m.prompt_version_id,  # 阶段5第三批：回答用的提示词版本
             "citations": by_message.get(m.id, []),
         }
         for m in msgs
@@ -256,10 +258,14 @@ async def get_messages(db: AsyncSession, conversation_id: str) -> list[dict[str,
 
 
 async def add_message(db: AsyncSession, conversation_id: str, role: str, content: str,
-                      mode: str, status: str | None = None) -> Message:
-    """插入一条消息；assistant 消息以 status=generating 先行落库（方案 1.2 第 4 条）。"""
+                      mode: str, status: str | None = None,
+                      prompt_version_id: int | None = None) -> Message:
+    """插入一条消息；assistant 消息以 status=generating 先行落库（方案 1.2 第 4 条）。
+
+    prompt_version_id：本回答使用的提示词版本（阶段5第三批，审计可追溯）。
+    """
     msg = Message(conversation_id=conversation_id, role=role, content=content,
-                  mode=mode, status=status)
+                  mode=mode, status=status, prompt_version_id=prompt_version_id)
     db.add(msg)
     await db.flush()
     # 会话 updated_at 是列表排序键，每条消息都刷新
@@ -665,3 +671,123 @@ async def get_kb_document_detail(db: AsyncSession,
             for v in versions
         ],
     }
+
+
+# ============================== 提示词模板（阶段5第三批） ==============================
+
+async def seed_prompt_templates(db: AsyncSession) -> int:
+    """
+    种子写入默认提示词模板（幂等：已存在的 code 不动，绝不覆盖管理员改过的内容）。
+
+    返回新建的模板数。每个新建模板同时生成 v1 版本并置为当前版本。
+    """
+    from app.core.default_prompts import DEFAULT_TEMPLATES
+
+    created = 0
+    for code, (name, desc, content) in DEFAULT_TEMPLATES.items():
+        exists = (await db.execute(
+            select(PromptTemplate).where(PromptTemplate.code == code))).scalar_one_or_none()
+        if exists is not None:
+            continue
+        tpl = PromptTemplate(code=code, name=name, description=desc)
+        db.add(tpl)
+        await db.flush()
+        ver = PromptTemplateVersion(
+            template_id=tpl.id, version_no=1, content=content,
+            change_note="初始版本（系统内置）", created_by=None)
+        db.add(ver)
+        await db.flush()
+        tpl.current_version_id = ver.id
+        created += 1
+    return created
+
+
+async def list_prompt_templates(db: AsyncSession) -> list[dict[str, Any]]:
+    """模板列表（含当前版本号、内容长度、更新时间）。"""
+    tpl, ver = PromptTemplate, PromptTemplateVersion
+    rows = (await db.execute(
+        select(tpl.id, tpl.code, tpl.name, tpl.description, tpl.updated_at,
+               ver.version_no, ver.content, ver.created_at.label("version_created_at"))
+        .outerjoin(ver, ver.id == tpl.current_version_id)
+        .order_by(tpl.id))).all()
+    return [
+        {
+            "id": r.id, "code": r.code, "name": r.name, "description": r.description,
+            "version_no": r.version_no, "chars": len(r.content or ""),
+            "updated_at": r.updated_at, "version_created_at": r.version_created_at,
+        }
+        for r in rows
+    ]
+
+
+async def get_prompt_template(db: AsyncSession, code: str) -> PromptTemplate | None:
+    return (await db.execute(
+        select(PromptTemplate).where(PromptTemplate.code == code))).scalar_one_or_none()
+
+
+async def get_prompt_template_by_id(db: AsyncSession,
+                                    template_id: int) -> PromptTemplate | None:
+    return (await db.execute(
+        select(PromptTemplate)
+        .where(PromptTemplate.id == template_id))).scalar_one_or_none()
+
+
+async def get_prompt_version(db: AsyncSession,
+                             version_id: int) -> PromptTemplateVersion | None:
+    return (await db.execute(
+        select(PromptTemplateVersion)
+        .where(PromptTemplateVersion.id == version_id))).scalar_one_or_none()
+
+
+async def get_current_prompt(db: AsyncSession, code: str) -> dict[str, Any] | None:
+    """当前生效版本（一次联表查询：模板 + 版本内容 + 版本号）。"""
+    tpl, ver, user = PromptTemplate, PromptTemplateVersion, User
+    row = (await db.execute(
+        select(tpl.id.label("template_id"), tpl.code, tpl.name,
+               ver.id.label("version_id"), ver.version_no, ver.content,
+               ver.change_note, ver.created_at, user.username.label("created_by_name"))
+        .join(ver, ver.id == tpl.current_version_id)
+        .outerjoin(user, user.id == ver.created_by)
+        .where(tpl.code == code))).first()
+    return dict(row._mapping) if row else None
+
+
+async def list_prompt_versions(db: AsyncSession, template_id: int,
+                               limit: int = 50) -> list[dict[str, Any]]:
+    """版本历史（新版本在前），标记当前生效版本。"""
+    ver, user, tpl = PromptTemplateVersion, User, PromptTemplate
+    current_id = (await db.execute(
+        select(tpl.current_version_id).where(tpl.id == template_id))).scalar_one_or_none()
+    rows = (await db.execute(
+        select(ver.id, ver.version_no, ver.change_note, ver.created_at,
+               ver.content, user.username.label("created_by_name"))
+        .outerjoin(user, user.id == ver.created_by)
+        .where(ver.template_id == template_id)
+        .order_by(ver.version_no.desc())
+        .limit(limit))).all()
+    return [
+        {
+            "id": r.id, "version_no": r.version_no, "change_note": r.change_note,
+            "created_by_name": r.created_by_name or "系统内置",
+            "created_at": r.created_at, "chars": len(r.content or ""),
+            "is_current": r.id == current_id,
+        }
+        for r in rows
+    ]
+
+
+async def create_prompt_version(db: AsyncSession, template_id: int, content: str,
+                                change_note: str, created_by: int | None) -> PromptTemplateVersion:
+    """插入新版本并移动 current 指针（编辑与恢复共用；版本号 = 现有最大 + 1）。"""
+    max_no = (await db.execute(
+        select(func.max(PromptTemplateVersion.version_no))
+        .where(PromptTemplateVersion.template_id == template_id))).scalar_one_or_none()
+    ver = PromptTemplateVersion(
+        template_id=template_id, version_no=(max_no or 0) + 1,
+        content=content, change_note=change_note[:256], created_by=created_by)
+    db.add(ver)
+    await db.flush()
+    await db.execute(
+        update(PromptTemplate).where(PromptTemplate.id == template_id)
+        .values(current_version_id=ver.id))
+    return ver

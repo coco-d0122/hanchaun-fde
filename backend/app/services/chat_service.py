@@ -27,8 +27,8 @@ from fastapi import Request
 from app.core.config import Settings
 from app.core.guardrail import number_trace_guard
 from app.core.llm import LLMError, call_llm_stream
-from app.core.prompts import (SYSTEM_PROMPT_ANOMALY, SYSTEM_PROMPT_QA,
-                              build_anomaly_prompt, build_qa_prompt)
+# 系统提示词正文已迁入 prompt_templates（阶段5第三批），这里只保留用户侧拼装函数
+from app.core.prompts import build_anomaly_prompt, build_qa_prompt
 from app.core.retriever import HybridRetriever, Retrieved
 from app.core.rules import AnomalyEvent
 from app.db import repo
@@ -171,6 +171,11 @@ async def chat_stream(
             return False
 
     # ---------- Phase 1：会话确定 + 历史读取 + 用户消息落库 ----------
+    # 提示词版本快照：在请求开始时取一次，整个生成期间沿用（改库不影响在途请求）
+    from app.services.prompt_service import get_system_prompt
+    prompt_code = "qa" if req.mode == "knowledge" else "anomaly"
+    prompt_version_id, system_text = await get_system_prompt(prompt_code)
+
     async with session_factory() as db:
         async with db.begin():
             if req.session_id:
@@ -213,7 +218,7 @@ async def chat_stream(
             return
 
         prompt = build_qa_prompt(req.question, results, history)
-        system = SYSTEM_PROMPT_QA
+        system = system_text          # 来自 prompt_templates 快照（含代码追加的硬约束）
         citations = knowledge_citations(results, cfg.citation_excerpt_len)
         context_text = "\n".join(r.chunk.content for r in results)
     else:
@@ -247,7 +252,7 @@ async def chat_stream(
         yield _status("analyzing")
         event: AnomalyEvent = repo.row_to_event(ev_row)
         prompt = build_anomaly_prompt(event, results, history)
-        system = SYSTEM_PROMPT_ANOMALY
+        system = system_text          # 同上
         # 数值溯源的"允许数值集合"= 证据 JSON + 知识片段
         from app.core.prompts import build_evidence_payload
         evidence_text = json.dumps(build_evidence_payload(event, results),
@@ -261,7 +266,8 @@ async def chat_stream(
     async with session_factory() as db:
         async with db.begin():
             msg = await repo.add_message(db, session_id, "assistant", "", req.mode,
-                                         status="generating")
+                                         status="generating",
+                                         prompt_version_id=prompt_version_id)
             message_id = msg.id
 
     # ---------- Phase 4：LLM 流式生成 ----------
@@ -356,4 +362,5 @@ async def chat_stream(
         "status": "complete",
         "guardrail": guardrail if req.mode == "anomaly" else None,
         "llm_mode": llm_mode,
+        "prompt_version_id": prompt_version_id,
     })

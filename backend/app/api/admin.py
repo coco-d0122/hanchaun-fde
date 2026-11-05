@@ -85,3 +85,20 @@ async def kb_page(request: Request,
                                      ensure_ascii=False),
         "max_mb": get_settings().kb_upload_max_mb,
     })
+
+
+@router.get("/prompts", response_class=HTMLResponse)
+async def prompts_page(request: Request,
+                       user: User | None = Depends(get_current_user_optional)):
+    """AI 提示词管理页（阶段5第三批）：编辑/版本历史/恢复。"""
+    if user is None:
+        return RedirectResponse("/login?next=/admin/prompts", status_code=302)
+    if "prompt:read" not in await _permission_codes(request, user):
+        return _forbidden(user, "prompt:read")
+
+    request.state.user = user
+    return _templates.TemplateResponse(request, "prompts.html", {
+        "username": user.username,
+        "nav": "prompts",
+        "template_codes": [("qa", "知识库问答模板"), ("anomaly", "异常分析模板")],
+    })

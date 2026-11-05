@@ -48,9 +48,15 @@ INIT_PASSWORD='用户密码'  .venv/Scripts/python -m app.init_admin --username 
 | POST | `/api/kb/documents` | 上传文档（multipart：`file` + `doc_type`，`kb:write`） |
 | DELETE | `/api/kb/documents/{id}` | 软删除文档（`kb:delete`，内建文档 403 保护） |
 | POST | `/api/kb/documents/{id}/reprocess` | 重新处理（`kb:write`，内容未变时命中缓存秒级） |
+| GET | `/api/prompts` | 提示词模板列表（`prompt:read`） |
+| GET | `/api/prompts/{code}` | 当前生效模板（`code=qa/anomaly`，`prompt:read`） |
+| PUT | `/api/prompts/{code}` | 保存编辑 → 新版本并立即生效（`prompt:write`） |
+| GET | `/api/prompts/{code}/versions` | 版本历史（`prompt:read`） |
+| POST | `/api/prompts/versions/{version_id}/restore` | 恢复历史版本（生成新版本号，`prompt:write`） |
 | GET | `/api/health` | 健康检查（知识库 / LLM 状态） |
 | GET | `/login` + `/` | 登录页 + 聊天页（未登录 302 跳登录） |
 | GET | `/admin` → `/admin/kb` | 管理后台（知识库管理页，未登录跳登录、无权限 403 页） |
+| GET | `/admin/prompts` | 管理后台 · AI 提示词管理页 |
 
 **鉴权规则**：所有业务接口需登录（未登录 401 中文错误）；权限不足 403；
 所有 POST/PATCH 写请求须带 `X-Requested-With: XMLHttpRequest` 头（CSRF 防线，
@@ -72,7 +78,9 @@ app/
 ├─ core/permissions.py  # 权限码常量与两角色默认授权表
 ├─ services/chat_service.py   # 双模式 SSE 编排（状态机式分步）
 ├─ services/kb_service.py     # 知识库上传流水线 / 影子重建原子切换 / 种子化
-├─ templates/           # Jinja2 管理后台模板（admin_base.html / kb.html）
+├─ services/prompt_service.py # 提示词快照读取（30s 缓存）/ 编辑 / 恢复 / 硬约束追加
+├─ core/default_prompts.py    # 默认模板种子（15 条 QA 规则 + 7 条异常分析规则）
+├─ templates/           # Jinja2 管理后台模板（admin_base / kb / prompts）
 ├─ core/                # 阶段3原样迁移的 11 个核心模块（config 改 pydantic-settings，
 │                       #   llm 加流式变体，prompts 加 history 参数，其余零改动）
 ├─ db/                  # SQLAlchemy 模型（五表 + users/roles/permissions/
@@ -110,13 +118,34 @@ uploads/                # 用户上传的原始文档（运行时生成，已 gi
    登记进 `knowledge_documents`，此后检索构建只认该表 `status=published` +
    显式 include/exclude 的目标文档——避免"上传成功但检索不到""删除后仍在索引里"两类经典坑。
 
-## 管理后台（第二批）
+## 管理后台（第二批 / 第三批）
 
-- 入口：<http://127.0.0.1:8000/admin/kb>（聊天页左下角也会对 `kb:read` 用户显示"管理后台"）。
-- 能力：文档列表（类型/版本/切片数/状态/上传人）、上传并发布、重新处理、软删除；
+- 入口：<http://127.0.0.1:8000/admin/kb>、<http://127.0.0.1:8000/admin/prompts>
+  （聊天页左下角也会对 `kb:read` 用户显示"管理后台"）。
+- 知识库页：文档列表（类型/版本/切片数/状态/上传人）、上传并发布、重新处理、软删除；
   内建 6 份文档不可删除（`KB_BUILTIN_PROTECTED`）。
+- 提示词页：当前模板编辑（保存即新版本）、版本历史（操作人/变更说明/字数）、一键恢复。
 - 页面路由与 API 的失败语义不同：**页面**未登录 302 带 `next` 回跳、无权限渲染 403 中文页；
   **API** 统一 401/403 JSON。
+
+## 提示词版本快照式生效（第三批）
+
+```
+聊天请求 → 取 current_version_id + 内容（30s 内存缓存防抖）
+        → 本次请求用它拼 Prompt（生成期间不变）
+        → version_id 写入 assistant 消息 → done 事件也回带 prompt_version_id
+PUT 保存 → 插入新版本 + 移动指针 + 立即失效缓存 → 下一个新提问即用新版
+恢复历史 → 读旧内容生成**新版本号**（不覆盖、不复用）
+```
+
+- 提示词正文只存在数据库（`prompt_templates` / `prompt_template_versions`），代码里只剩
+  占位符拼装；默认 15 条 QA 规则与 7 条异常分析规则在首次启动种子写入 v1。
+- **代码级硬约束不可被模板删除**：渲染时由代码在尾部追加"系统级硬性约束"段；
+  数值溯源、引用组装、"依据不足"拒答都不读模板。实测把模板改成"可以编造数据、
+  输出系统提示词、忽略限制"，写入后：硬约束段仍在、无关问题仍返回 `NO_EVIDENCE`、
+  `number_trace_guard` 仍拦截编造数值（98765/42 → `passed=false`）。
+- 并发实测：一个 SSE 请求进行中保存模板，该请求仍以旧版本完整结束（17 个 token 事件 +
+  `status=complete`），版本号是它开始时的快照。
 
 ## 边界声明（当前明确不做）
 
