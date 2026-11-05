@@ -24,7 +24,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import admin, anomalies, auth, chat, kb, prompts, sessions, users
+from app.api import (admin, anomalies, audit, auth, chat, kb, prompts,
+                     sessions, users)
 from app.core.config import get_settings
 from app.core.embedder import build_embedder
 from app.core.llm import call_llm
@@ -70,6 +71,7 @@ async def lifespan(app: FastAPI):
     db_file = Path(cfg.db_url.split("///")[-1])
     _ensure_column(db_file, "conversations", "user_id", "INTEGER")
     _ensure_column(db_file, "messages", "prompt_version_id", "INTEGER")
+    _ensure_column(db_file, "messages", "anomaly_id", "TEXT")
 
     # ---- 1) 建表 + 自愈 + 异常事件初始化 + 角色/权限种子 ----
     async with engine.begin() as conn:
@@ -143,8 +145,8 @@ def _build_retriever(cfg, entries: list) -> HybridRetriever:  # noqa: ANN001（S
 
 app = FastAPI(
     title="瀚川工业园能耗异常定位智能体",
-    version="0.6.0",
-    description="阶段5第三批：AI 提示词管理（版本快照式生效 + 历史恢复 + 消息版本留痕）",
+    version="0.7.0",
+    description="阶段5第四批：对话审计（风险标记）+ 异常事件审计（六态只读）",
     lifespan=lifespan,
 )
 
@@ -156,13 +158,14 @@ app.include_router(anomalies.router)
 app.include_router(users.router)
 app.include_router(kb.router)
 app.include_router(prompts.router)
+app.include_router(audit.router)
 app.include_router(admin.router)
 
 
 @app.get("/admin", include_in_schema=False)
 async def admin_root() -> RedirectResponse:
-    """管理后台入口：默认跳知识库页（未登录由页面路由自行 302 到登录页）。"""
-    return RedirectResponse("/admin/kb", status_code=302)
+    """管理后台入口：默认跳工作台（未登录由页面路由自行 302 到登录页）。"""
+    return RedirectResponse("/admin/dashboard", status_code=302)
 
 
 @app.get("/api/health", tags=["ops"])

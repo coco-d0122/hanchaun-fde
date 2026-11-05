@@ -258,6 +258,8 @@ class Message(Base):
     guardrail_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # 阶段5第三批：本回答使用的提示词版本（审计可回答"当时用的哪版"）
     prompt_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 阶段5第四批：anomaly 模式回答关联的事件号（审计详情"关联异常"用）
+    anomaly_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
@@ -326,3 +328,52 @@ class AnomalyEvidenceRow(Base):
     source_reference: Mapped[str] = mapped_column(String(128))   # 数据定位（表#行）
 
     event: Mapped[AnomalyEventRow] = relationship(back_populates="evidence_rows")
+
+
+# ==============================================================================
+# 阶段5第四批：对话审计与异常复核（2 张表 + messages.anomaly_id）
+# ==============================================================================
+
+class ConversationAuditFlag(Base):
+    """对话风险标记 conversation_audit_flags。
+
+    7 类 flag_type 对应需求（缺证据/编造规则/推测当结论/建议改数/建议绕复核/
+    建议控设备/与规则冲突）。本阶段唯一来源是人工标记；source 预留给 P2 自动规则。
+    标记本身也是写操作 → 同时写 audit_logs（action=flag_update）。
+    """
+
+    __tablename__ = "conversation_audit_flags"
+    __table_args__ = (Index("ix_caf_message", "message_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("messages.id", ondelete="CASCADE"), index=True)
+    flag_type: Mapped[str] = mapped_column(String(32))
+    note: Mapped[str] = mapped_column(String(512), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/processed/dismissed
+    source: Mapped[str] = mapped_column(String(8), default="manual")    # manual / auto（P2 预留）
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ReviewRecord(Base):
+    """人工复核记录 review_records（本阶段只读）。
+
+    ★ 表结构即为最终结构，但**写入接口不注册**：
+      `anomaly:review:submit` 签核权首期不授予任何角色（含 admin），
+      "系统管理员 ≠ 电气安全主管"。页面上的提交按钮渲染为禁用态。
+    """
+
+    __tablename__ = "review_records"
+    __table_args__ = (Index("ix_review_anomaly", "anomaly_id", "reviewed_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anomaly_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("anomaly_events.id", ondelete="CASCADE"), index=True)
+    review_type: Mapped[str] = mapped_column(String(32), default="final")  # final / spot_check
+    conclusion: Mapped[str] = mapped_column(Text, default="")             # 复核结论（业务填写）
+    evidence_refs: Mapped[list] = mapped_column(JSON, default=list)        # 引用的证据定位键
+    reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    status: Mapped[str] = mapped_column(String(16), default="submitted")

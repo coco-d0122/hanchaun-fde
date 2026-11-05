@@ -267,7 +267,9 @@ async def chat_stream(
         async with db.begin():
             msg = await repo.add_message(db, session_id, "assistant", "", req.mode,
                                          status="generating",
-                                         prompt_version_id=prompt_version_id)
+                                         prompt_version_id=prompt_version_id,
+                                         anomaly_id=(req.anomaly_id
+                                                     if req.mode == "anomaly" else None))
             message_id = msg.id
 
     # ---------- Phase 4：LLM 流式生成 ----------
@@ -356,6 +358,10 @@ async def chat_stream(
                 db, message_id, "complete", content=content,
                 guardrail_passed=(guardrail["passed"] if req.mode == "anomaly" else None))
             await repo.save_citations(db, message_id, cfg.citation_excerpt_len, citations)
+            # 阶段5第四批：AI 分析完成 → 事件由 pending_analysis 推进到 pending_review
+            # 只做这一个方向的推进，不写任何结论（最终结论属业务签核权）
+            if req.mode == "anomaly" and req.anomaly_id:
+                await repo.mark_anomaly_analyzed(db, req.anomaly_id)
 
     yield sse_frame("done", {
         "message_id": message_id,

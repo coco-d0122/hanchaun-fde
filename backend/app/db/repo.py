@@ -22,10 +22,10 @@ from app.core.config import Settings
 from app.core.permissions import PERMISSIONS, ROLES, ROLE_PERMISSIONS
 from app.core.rules import AnomalyEvent, detect_all, load_readings, compute_intervals
 from app.db.models import (AnomalyEventRow, AnomalyEvidenceRow, AuditLog, Conversation,
-                            KnowledgeDocument, KnowledgeDocumentVersion,
-                            Message, MessageCitation, Permission, PromptTemplate,
-                            PromptTemplateVersion, Role, RolePermission,
-                            User, UserRole)
+                            ConversationAuditFlag, KnowledgeDocument,
+                            KnowledgeDocumentVersion, Message, MessageCitation, Permission,
+                            PromptTemplate, PromptTemplateVersion, ReviewRecord, Role,
+                            RolePermission, User, UserRole)
 
 logger = logging.getLogger(__name__)
 
@@ -259,13 +259,16 @@ async def get_messages(db: AsyncSession, conversation_id: str) -> list[dict[str,
 
 async def add_message(db: AsyncSession, conversation_id: str, role: str, content: str,
                       mode: str, status: str | None = None,
-                      prompt_version_id: int | None = None) -> Message:
+                      prompt_version_id: int | None = None,
+                      anomaly_id: str | None = None) -> Message:
     """插入一条消息；assistant 消息以 status=generating 先行落库（方案 1.2 第 4 条）。
 
     prompt_version_id：本回答使用的提示词版本（阶段5第三批，审计可追溯）。
+    anomaly_id：anomaly 模式回答关联的事件号（阶段5第四批，审计详情用）。
     """
     msg = Message(conversation_id=conversation_id, role=role, content=content,
-                  mode=mode, status=status, prompt_version_id=prompt_version_id)
+                  mode=mode, status=status, prompt_version_id=prompt_version_id,
+                  anomaly_id=anomaly_id)
     db.add(msg)
     await db.flush()
     # 会话 updated_at 是列表排序键，每条消息都刷新
@@ -404,7 +407,7 @@ async def seed_anomaly_events(db: AsyncSession, cfg: Settings) -> int:
             window_end=ev.window_end,
             description=ev.summary,
             rule_result=ev.metrics,
-            status="pending_review",
+            status="pending_analysis",   # 六态机起点（阶段5第四批）
             # 重建 AnomalyEvent 所需的补充字段
             extra={
                 "event_type": ev.event_type,
@@ -437,11 +440,30 @@ async def seed_anomaly_events(db: AsyncSession, cfg: Settings) -> int:
     return len(events)
 
 
-async def list_anomaly_events(db: AsyncSession, status: str | None = None) -> list[dict[str, Any]]:
-    """异常事件列表（按 detected_at 升序，与阶段3 CLI 输出顺序一致）。"""
+async def list_anomaly_events(db: AsyncSession, status: str | None = None,
+                              meter_id: str | None = None,
+                              building_id: str | None = None,
+                              anomaly_type: str | None = None,
+                              date_from: str | None = None,
+                              date_to: str | None = None) -> list[dict[str, Any]]:
+    """异常事件列表（按 detected_at 升序，与阶段3 CLI 输出顺序一致）。
+
+    阶段5第四批增加筛选：电表 / 楼栋 / 类型 / 时间范围（审计页用）。
+    """
     stmt = select(AnomalyEventRow).order_by(AnomalyEventRow.detected_at, AnomalyEventRow.id)
     if status:
         stmt = stmt.where(AnomalyEventRow.status == status)
+    if meter_id:
+        stmt = stmt.where(AnomalyEventRow.meter_id == meter_id)
+    if building_id:
+        stmt = stmt.where(AnomalyEventRow.building_id == building_id)
+    if anomaly_type:
+        stmt = stmt.where(AnomalyEventRow.anomaly_type == anomaly_type)
+    if date_from:
+        stmt = stmt.where(AnomalyEventRow.detected_at >= date_from)
+    if date_to:
+        stmt = stmt.where(AnomalyEventRow.detected_at
+                          <= (date_to + " 23:59:59" if len(date_to) == 10 else date_to))
     rows = (await db.execute(stmt)).scalars().all()
 
     counts_stmt = select(
@@ -791,3 +813,312 @@ async def create_prompt_version(db: AsyncSession, template_id: int, content: str
         update(PromptTemplate).where(PromptTemplate.id == template_id)
         .values(current_version_id=ver.id))
     return ver
+
+
+# ============================== 对话审计与异常复核（阶段5第四批） ==============================
+
+# 7 类风险标记（需求口径）；API 层用它做白名单校验
+FLAG_TYPES: dict[str, str] = {
+    "missing_evidence": "缺证据",
+    "fabricated_rule": "编造规则",
+    "speculation_as_fact": "推测当结论",
+    "suggest_modify_data": "建议改数",
+    "suggest_skip_review": "建议绕复核",
+    "suggest_control_device": "建议控设备",
+    "conflict_with_rule": "与规则冲突",
+}
+
+
+async def list_audit_messages(db: AsyncSession, user_id: int | None = None,
+                              date_from: str | None = None, date_to: str | None = None,
+                              session_id: str | None = None, mode: str | None = None,
+                              anomaly_id: str | None = None,
+                              has_anomaly: bool | None = None,
+                              has_flag: bool | None = None,
+                              keyword: str | None = None,
+                              limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """
+    对话审计列表：以 assistant 消息为一行（每条回答即一次审计单元）。
+
+    六条件组合筛选：用户 / 时间范围 / 会话号 / 模式 / 是否涉异常 / 是否有风险标记。
+    另加 keyword（命中问题或回答正文），便于按内容追查。
+    """
+    msg, conv, usr = Message, Conversation, User
+    flag_count = (
+        select(ConversationAuditFlag.message_id,
+               func.count(ConversationAuditFlag.id).label("flag_count"))
+        .group_by(ConversationAuditFlag.message_id)
+        .subquery())
+    ver = PromptTemplateVersion
+
+    stmt = (
+        select(msg.id, msg.conversation_id, msg.mode, msg.status, msg.content,
+               msg.guardrail_passed, msg.prompt_version_id, msg.anomaly_id, msg.created_at,
+               conv.title, usr.username, conv.user_id,
+               func.coalesce(flag_count.c.flag_count, 0).label("flag_count"),
+               ver.version_no.label("prompt_version_no"))
+        .join(conv, conv.id == msg.conversation_id)
+        .outerjoin(usr, usr.id == conv.user_id)
+        .outerjoin(flag_count, flag_count.c.message_id == msg.id)
+        .outerjoin(ver, ver.id == msg.prompt_version_id)
+        .where(msg.role == "assistant")
+    )
+    if user_id:
+        stmt = stmt.where(conv.user_id == user_id)
+    if session_id:
+        stmt = stmt.where(msg.conversation_id == session_id)
+    if mode:
+        stmt = stmt.where(msg.mode == mode)
+    if anomaly_id:
+        stmt = stmt.where(msg.anomaly_id == anomaly_id)
+    if date_from:
+        stmt = stmt.where(msg.created_at >= date_from)
+    if date_to:
+        # 传日期（YYYY-MM-DD）时按"当日含全天"处理，避免漏掉当天下午的记录
+        stmt = stmt.where(msg.created_at <= (date_to + " 23:59:59"
+                                            if len(date_to) == 10 else date_to))
+    if has_anomaly is True:
+        stmt = stmt.where(msg.anomaly_id.is_not(None))
+    elif has_anomaly is False:
+        stmt = stmt.where(msg.anomaly_id.is_(None))
+    if has_flag is True:
+        stmt = stmt.where(func.coalesce(flag_count.c.flag_count, 0) > 0)
+    elif has_flag is False:
+        stmt = stmt.where(func.coalesce(flag_count.c.flag_count, 0) == 0)
+    if keyword:
+        like = f"%{keyword}%"
+        stmt = stmt.where(or_(msg.content.like(like), conv.title.like(like)))
+
+    total = (await db.execute(
+        select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await db.execute(
+        stmt.order_by(msg.id.desc()).limit(limit).offset(offset))).all()
+
+    return {
+        "total": int(total),
+        "items": [
+            {
+                "message_id": r.id,
+                "session_id": r.conversation_id,
+                "session_title": r.title,
+                "username": r.username or "（未登录会话）",
+                "user_id": r.user_id,
+                "mode": r.mode,
+                "status": r.status,
+                "excerpt": (r.content or "")[:160],
+                "guardrail_passed": r.guardrail_passed,
+                "prompt_version_id": r.prompt_version_id,
+                "prompt_version_no": r.prompt_version_no,
+                "anomaly_id": r.anomaly_id,
+                "flag_count": int(r.flag_count or 0),
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ],
+    }
+
+
+async def get_audit_message_detail(db: AsyncSession, message_id: int) -> dict[str, Any] | None:
+    """消息审计详情：问答原文 + 引用 + 提示词版本 + 生成状态 + 关联异常 + 风险标记。"""
+    msg = (await db.execute(
+        select(Message).where(Message.id == message_id))).scalar_one_or_none()
+    if msg is None:
+        return None
+
+    conv = await get_conversation(db, msg.conversation_id)
+    usr = await get_user(db, conv.user_id) if conv and conv.user_id else None
+    # 同一会话里该回答之前最近一条用户消息 = 这次的问题
+    question = (await db.execute(
+        select(Message.content)
+        .where(Message.conversation_id == msg.conversation_id,
+               Message.role == "user", Message.id < msg.id)
+        .order_by(Message.id.desc()).limit(1))).scalar_one_or_none()
+
+    citations = (await db.execute(
+        select(MessageCitation).where(MessageCitation.message_id == message_id)
+        .order_by(MessageCitation.id))).scalars().all()
+
+    prompt_ver = None
+    if msg.prompt_version_id:
+        prompt_ver = (await db.execute(
+            select(PromptTemplateVersion.version_no)
+            .where(PromptTemplateVersion.id == msg.prompt_version_id))).scalar_one_or_none()
+
+    anomaly = None
+    if msg.anomaly_id:
+        row = await get_anomaly_event(db, msg.anomaly_id)
+        if row is not None:
+            anomaly = {
+                "anomaly_id": row.id, "meter_id": row.meter_id,
+                "building_id": row.building_id, "anomaly_type": row.anomaly_type,
+                "rule_code": row.rule_code, "severity": row.severity,
+                "status": row.status, "detected_at": row.detected_at.isoformat(),
+                "summary": row.description,
+            }
+
+    flags = await list_flags(db, message_id=message_id)
+
+    return {
+        "message_id": msg.id,
+        "session_id": msg.conversation_id,
+        "session_title": conv.title if conv else "",
+        "username": (usr.username if usr else "（未登录会话）"),
+        "mode": msg.mode,
+        "status": msg.status,
+        "question": question or "",
+        "answer": msg.content or "",
+        "error_info": msg.error_info,
+        "guardrail_passed": msg.guardrail_passed,
+        "prompt_version_id": msg.prompt_version_id,
+        "prompt_version_no": prompt_ver,
+        "anomaly": anomaly,
+        "citations": [
+            {"source_type": c.source_type, "source_file": c.source_file,
+             "chunk_id": c.chunk_id, "excerpt": c.excerpt}
+            for c in citations
+        ],
+        "flags": flags,
+        "created_at": msg.created_at.isoformat(),
+    }
+
+
+async def list_flags(db: AsyncSession, message_id: int | None = None,
+                     status: str | None = None,
+                     limit: int = 100) -> list[dict[str, Any]]:
+    """风险标记列表（可按消息 / 处理状态过滤）。"""
+    usr = User
+    stmt = (select(ConversationAuditFlag, usr.username)
+            .outerjoin(usr, usr.id == ConversationAuditFlag.created_by)
+            .order_by(ConversationAuditFlag.id.desc()).limit(limit))
+    if message_id is not None:
+        stmt = stmt.where(ConversationAuditFlag.message_id == message_id)
+    if status:
+        stmt = stmt.where(ConversationAuditFlag.status == status)
+    rows = (await db.execute(stmt)).all()
+    return [
+        {
+            "id": f.id, "message_id": f.message_id,
+            "flag_type": f.flag_type,
+            "flag_type_name": FLAG_TYPES.get(f.flag_type, f.flag_type),
+            "note": f.note, "status": f.status, "source": f.source,
+            "created_by_name": uname or "系统",
+            "created_at": f.created_at.isoformat(),
+            "updated_at": f.updated_at.isoformat(),
+        }
+        for f, uname in rows
+    ]
+
+
+async def create_flag(db: AsyncSession, message_id: int, flag_type: str,
+                      note: str, user_id: int | None) -> ConversationAuditFlag:
+    flag = ConversationAuditFlag(message_id=message_id, flag_type=flag_type,
+                                 note=note[:512], created_by=user_id)
+    db.add(flag)
+    await db.flush()
+    return flag
+
+
+async def update_flag(db: AsyncSession, flag_id: int, status: str,
+                      note: str | None = None) -> bool:
+    values: dict[str, Any] = {"status": status}
+    if note is not None:
+        values["note"] = note[:512]
+    result = await db.execute(
+        update(ConversationAuditFlag)
+        .where(ConversationAuditFlag.id == flag_id).values(**values))
+    return bool(result.rowcount)
+
+
+async def list_review_records(db: AsyncSession, anomaly_id: str) -> list[dict[str, Any]]:
+    """人工复核记录（只读）：本阶段正常情况下为空——签核权未授予任何角色。"""
+    usr = User
+    rows = (await db.execute(
+        select(ReviewRecord, usr.username)
+        .outerjoin(usr, usr.id == ReviewRecord.reviewed_by)
+        .where(ReviewRecord.anomaly_id == anomaly_id)
+        .order_by(ReviewRecord.reviewed_at.desc()))).all()
+    return [
+        {
+            "id": r.id, "review_type": r.review_type, "conclusion": r.conclusion,
+            "evidence_refs": r.evidence_refs or [], "status": r.status,
+            "reviewed_by_name": uname or "系统",
+            "reviewed_at": r.reviewed_at.isoformat(),
+        }
+        for r, uname in rows
+    ]
+
+
+async def mark_anomaly_analyzed(db: AsyncSession, anomaly_id: str) -> bool:
+    """
+    AI 分析完成后把事件从 pending_analysis 推进到 pending_review（系统内部动作）。
+
+    ★ 只允许这一个方向的状态推进：不做 confirmed/dismissed/closed 的任何写入——
+      那是业务签核权的范围，本阶段接口层面不开放。
+    """
+    result = await db.execute(
+        update(AnomalyEventRow)
+        .where(AnomalyEventRow.id == anomaly_id,
+               AnomalyEventRow.status == "pending_analysis")
+        .values(status="pending_review"))
+    return bool(result.rowcount)
+
+
+async def get_flag(db: AsyncSession, flag_id: int) -> ConversationAuditFlag | None:
+    return (await db.execute(
+        select(ConversationAuditFlag)
+        .where(ConversationAuditFlag.id == flag_id))).scalar_one_or_none()
+
+
+# ============================== 工作台概览（阶段5补全） ==============================
+
+async def dashboard_stats(db: AsyncSession) -> dict[str, Any]:
+    """工作台概览卡片 + 最近 10 条操作日志。
+
+    口径说明：对话数与消息数按"当日 00:00 起"统计；待复核异常只统计
+    pending_review（复核中是业务签核后才有的态，本阶段不会出现）。
+    """
+    from datetime import datetime as _dt
+
+    today = _dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    users_total = (await db.execute(select(func.count(User.id)))).scalar_one()
+    users_active = (await db.execute(
+        select(func.count(User.id)).where(User.is_active.is_(True)))).scalar_one()
+    docs_published = (await db.execute(
+        select(func.count(KnowledgeDocument.id))
+        .where(KnowledgeDocument.status == "published"))).scalar_one()
+    conv_today = (await db.execute(
+        select(func.count(Conversation.id))
+        .where(Conversation.created_at >= today))).scalar_one()
+    msg_today = (await db.execute(
+        select(func.count(Message.id))
+        .where(Message.role == "assistant", Message.created_at >= today))).scalar_one()
+    pending_review = (await db.execute(
+        select(func.count(AnomalyEventRow.id))
+        .where(AnomalyEventRow.status == "pending_review"))).scalar_one()
+    flags_pending = (await db.execute(
+        select(func.count(ConversationAuditFlag.id))
+        .where(ConversationAuditFlag.status == "pending"))).scalar_one()
+
+    logs = (await db.execute(
+        select(AuditLog, User.username)
+        .outerjoin(User, User.id == AuditLog.user_id)
+        .order_by(AuditLog.id.desc()).limit(10))).all()
+
+    return {
+        "users_total": users_total,
+        "users_active": users_active,
+        "docs_published": docs_published,
+        "conversations_today": conv_today,
+        "answers_today": msg_today,
+        "anomalies_pending_review": pending_review,
+        "flags_pending": flags_pending,
+        "recent_logs": [
+            {
+                "id": a.id, "action": a.action, "username": uname or "系统",
+                "object_type": a.object_type, "object_id": a.object_id,
+                "result": a.result, "detail": a.detail or {},
+                "created_at": a.created_at.isoformat(),
+            }
+            for a, uname in logs
+        ],
+    }

@@ -1,0 +1,217 @@
+{% extends "admin_base.html" %}
+{% block title %}能耗异常事件审计{% endblock %}
+{% block pagetitle %}能耗异常事件审计{% endblock %}
+
+{% block head %}
+<style>
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .filters label { font-size: 12.5px; color: var(--text-2); }
+  .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: none; z-index: 20; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 700px; max-width: 94vw;
+    background: #fff; border-left: 1px solid var(--border); z-index: 21;
+    display: none; flex-direction: column;
+  }
+  .drawer.open, .drawer-mask.open { display: flex; }
+  .drawer-head { padding: 14px 18px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center; }
+  .drawer-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+  .sec { margin-top: 16px; }
+  .sec > .h { font-weight: 600; font-size: 13.5px; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 8px; }
+  .raw { background: #f6f8fa; border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 12px; font-size: 12.5px; line-height: 1.8; white-space: pre-wrap; }
+  .ai { background: #f2f7ff; border: 1px solid #cddffb; border-radius: 6px;
+    padding: 10px 12px; font-size: 12.5px; line-height: 1.8; white-space: pre-wrap; }
+  .tag { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 11.5px; }
+  .tag.high { background:#fdeaea; color:#dc2626; }
+  .tag.medium { background:#fdf3e6; color:#d97706; }
+  .tag.low { background:#eef1f5; color:#57606a; }
+  .st { display:inline-block; padding:1px 9px; border-radius:999px; font-size:11.5px; background:#eef1f5; color:#57606a; }
+  .st.pending_analysis { background:#fdf3e6; color:#d97706; }
+  .st.pending_review { background:#e8effc; color:#1e40af; }
+  .st.reviewing { background:#efe9fb; color:#6d28d9; }
+  .btn[disabled] { opacity:.5; cursor:not-allowed; }
+  .note-dis { color: var(--text-2); font-size: 12px; margin-left: 8px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="msg" class="msg"></div>
+
+<div class="card">
+  <div class="filters">
+    <label>状态
+      <select id="f-status">
+        <option value="">全部</option>
+        <option value="pending_analysis">待分析</option>
+        <option value="pending_review">待复核</option>
+        <option value="reviewing">复核中</option>
+        <option value="confirmed">已确认</option>
+        <option value="dismissed">已排除</option>
+        <option value="closed">已关闭</option>
+      </select>
+    </label>
+    <label>电表 <input type="text" id="f-meter" placeholder="如 M-002" style="width:110px"></label>
+    <label>楼栋 <input type="text" id="f-building" placeholder="如 B1" style="width:90px"></label>
+    <label>类型 <input type="text" id="f-type" placeholder="异常类型" style="width:150px"></label>
+    <label>起 <input type="date" id="f-from"></label>
+    <label>止 <input type="date" id="f-to"></label>
+    <button class="btn primary" id="btn-search">查询</button>
+    <button class="btn" id="btn-reset">重置</button>
+  </div>
+  <div class="hint" id="sum">共 0 条</div>
+</div>
+
+<div class="card" style="padding:0; overflow-x:auto;">
+  <table>
+    <thead>
+      <tr><th>事件号</th><th>电表</th><th>楼栋</th><th>类型</th><th>规则</th>
+          <th>严重度</th><th>状态</th><th>证据</th><th>检测时间</th><th></th></tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="10" class="empty">加载中…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="drawer-mask" id="mask"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <b>异常事件详情</b>
+    <button class="btn small" id="btn-close">关闭</button>
+  </div>
+  <div class="drawer-body" id="detail">加载中…</div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+const H = { 'X-Requested-With': 'XMLHttpRequest' };
+const $ = (id) => document.getElementById(id);
+const ST_TEXT = { pending_analysis: '待分析', pending_review: '待复核', reviewing: '复核中',
+                  confirmed: '已确认', dismissed: '已排除', closed: '已关闭' };
+const SEV_TEXT = { high: '高', medium: '中', low: '低' };
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function fmt(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '-'; }
+function showMsg(t, ok) {
+  const el = $('msg'); el.className = 'msg ' + (ok ? 'ok' : 'err'); el.textContent = t;
+  setTimeout(() => { el.className = 'msg'; }, 6000);
+}
+
+async function search() {
+  const p = new URLSearchParams();
+  const map = { 'f-status': 'status', 'f-meter': 'meter_id', 'f-building': 'building_id',
+                'f-type': 'anomaly_type', 'f-from': 'date_from', 'f-to': 'date_to' };
+  for (const [id, key] of Object.entries(map)) {
+    const v = $(id).value.trim();
+    if (v) p.set(key, v);
+  }
+  try {
+    const r = await fetch('/api/anomalies?' + p.toString());
+    if (r.status === 401) { location.href = '/login?next=/admin/anomalies'; return; }
+    const d = await r.json();
+    if (!r.ok) { showMsg(d.message || '查询失败', false); return; }
+    $('sum').textContent = `共 ${d.total} 条`;
+    $('rows').innerHTML = (d.items || []).map(a => `
+      <tr>
+        <td>${esc(a.anomaly_id)}</td>
+        <td>${esc(a.meter_id)}</td>
+        <td>${esc(a.building_id || '-')}</td>
+        <td>${esc(a.anomaly_type)}</td>
+        <td>${esc(a.rule_code)}</td>
+        <td><span class="tag ${a.severity}">${SEV_TEXT[a.severity] || a.severity}</span></td>
+        <td><span class="st ${a.status}">${ST_TEXT[a.status] || a.status}</span></td>
+        <td>${a.evidence_count}</td>
+        <td>${fmt(a.detected_at)}</td>
+        <td><button class="btn small" onclick="openDetail('${esc(a.anomaly_id)}')">详情</button></td>
+      </tr>`).join('') || '<tr><td colspan="10" class="empty">没有符合条件的事件</td></tr>';
+  } catch (e) { showMsg('查询失败：' + e.message, false); }
+}
+
+async function openDetail(id) {
+  $('mask').classList.add('open'); $('drawer').classList.add('open');
+  $('detail').textContent = '加载中…';
+  const [r1, r2, r3] = await Promise.all([
+    fetch(`/api/anomalies/${encodeURIComponent(id)}`),
+    fetch(`/api/anomalies/${encodeURIComponent(id)}/reviews`),
+    fetch(`/api/audit/conversations?anomaly_id=${encodeURIComponent(id)}&limit=5`),
+  ]);
+  const d = await r1.json();
+  if (!r1.ok) { $('detail').textContent = d.message || '加载失败'; return; }
+  const rev = r2.ok ? await r2.json() : { items: [] };
+  const ai = r3.ok ? await r3.json() : { items: [] };
+
+  const metrics = Object.entries(d.rule_result.metrics || {})
+    .map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join('\n') || '（无）';
+  const evidence = (d.evidence || []).map((e, i) =>
+    `${i + 1}. [${e.evidence_type}] ${e.content}\n   来源：${e.source_reference}`).join('\n') || '（无）';
+  const aiDrafts = (ai.items || []).map(a => `
+    <div class="ai" style="margin-bottom:8px;">
+      <div class="hint">${fmt(a.created_at)} · ${esc(a.username)} · 生成状态 ${esc(a.status)}
+        · 提示词 v${a.prompt_version_no || '-'}
+        · 溯源 ${a.guardrail_passed === false ? '<b style="color:#dc2626">未通过</b>'
+                  : a.guardrail_passed === true ? '通过' : '-'}</div>
+      ${esc((a.excerpt || '') + '…')}
+      <div style="margin-top:6px;">
+        <button class="btn small" onclick="location.href='/admin/audit'">到审计页查看全文</button>
+      </div>
+    </div>`).join('') || '<div class="raw">该事件暂无 AI 分析对话记录（尚未在聊天中发起分析）</div>';
+  const reviews = (rev.items || []).map(v => `
+    <div class="raw" style="margin-bottom:8px;">
+      ${esc(v.reviewed_at)} · ${esc(v.reviewed_by_name)} · ${esc(v.review_type)}<br>
+      ${esc(v.conclusion)}
+    </div>`).join('') || '<div class="raw">暂无复核记录（本阶段签核权未授予任何角色）</div>';
+
+  $('detail').innerHTML = `
+    <div class="kv">
+      <b>事件号</b>：${esc(d.anomaly_id)}　<span class="st ${d.status}">${ST_TEXT[d.status] || d.status}</span><br>
+      <b>电表</b>：${esc(d.meter_id)}　<b>楼栋</b>：${esc(d.building_id || '-')}　
+      <b>严重度</b>：<span class="tag ${d.severity}">${SEV_TEXT[d.severity] || d.severity}</span><br>
+      <b>类型</b>：${esc(d.anomaly_type)}（${esc(d.rule_code)}）<br>
+      <b>窗口</b>：${fmt(d.window.start)} ~ ${fmt(d.window.end)}　<b>检测</b>：${fmt(d.detected_at)}<br>
+      <b>摘要</b>：${esc(d.description)}
+    </div>
+
+    <div class="sec">
+      <div class="h">规则检测结果（原始，未经 AI 改写）</div>
+      <div class="raw">${esc(metrics)}</div>
+    </div>
+
+    <div class="sec">
+      <div class="h">证据（${(d.evidence || []).length} 条）</div>
+      <div class="raw">${esc(evidence)}</div>
+    </div>
+
+    <div class="sec">
+      <div class="h">AI 分析草稿（仅挂在对话消息上，不回写规则结果）</div>
+      ${aiDrafts}
+    </div>
+
+    <div class="sec">
+      <div class="h">人工复核记录
+        <button class="btn small" disabled title="签核权待业务角色上线">提交复核</button>
+        <span class="note-dis">按钮禁用：本阶段不提供签核接口（anomaly:review:submit 未授予任何角色）</span>
+      </div>
+      ${reviews}
+    </div>`;
+}
+
+$('btn-search').addEventListener('click', search);
+$('btn-reset').addEventListener('click', () => {
+  ['f-meter','f-building','f-type','f-from','f-to'].forEach(id => $(id).value = '');
+  $('f-status').value = '';
+  search();
+});
+$('btn-close').addEventListener('click', () => {
+  $('mask').classList.remove('open'); $('drawer').classList.remove('open');
+});
+$('mask').addEventListener('click', () => {
+  $('mask').classList.remove('open'); $('drawer').classList.remove('open');
+});
+
+search();
+</script>
+{% endblock %}

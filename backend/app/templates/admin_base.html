@@ -87,10 +87,12 @@
       <div class="brand">瀚川工业园<br>能耗异常定位智能体</div>
       <nav class="nav">
         <a href="/">↩ 返回聊天</a>
+        <a href="/admin/dashboard" {% if nav == 'dashboard' %}class="active"{% endif %}>工作台</a>
+        <a href="/admin/users" {% if nav == 'users' %}class="active"{% endif %}>用户管理</a>
         <a href="/admin/kb" {% if nav == 'kb' %}class="active"{% endif %}>能源管理知识库</a>
         <a href="/admin/prompts" {% if nav == 'prompts' %}class="active"{% endif %}>AI 提示词管理</a>
-        <a href="#" style="color:#9aa2ac" title="第四批交付">AI 对话审计（待开放）</a>
-        <a href="#" style="color:#9aa2ac" title="第四批交付">能耗异常事件（待开放）</a>
+        <a href="/admin/audit" {% if nav == 'audit' %}class="active"{% endif %}>AI 对话审计</a>
+        <a href="/admin/anomalies" {% if nav == 'anomalies' %}class="active"{% endif %}>能耗异常事件</a>
         <a href="#" style="color:#9aa2ac" title="第五批交付">系统操作日志（待开放）</a>
       </nav>
       <div class="foot">

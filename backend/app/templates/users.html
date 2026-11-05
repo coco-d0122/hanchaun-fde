@@ -1,0 +1,129 @@
+{% extends "admin_base.html" %}
+{% block title %}用户管理{% endblock %}
+{% block pagetitle %}用户管理{% endblock %}
+
+{% block head %}
+<style>
+  .row2 { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .row2 input, .row2 select { min-width: 150px; }
+  .tag.admin { background: #e8effc; color: #1e40af; }
+  .tag.user { background: #eef1f5; color: #57606a; }
+  .tag.off { background: #fdeaea; color: #dc2626; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="msg" class="msg"></div>
+
+<div class="card">
+  <div style="font-weight:600; margin-bottom:10px;">新建用户</div>
+  <div class="row2">
+    <input type="text" id="nu-name" placeholder="用户名（登录账号）">
+    <input type="password" id="nu-pass" placeholder="初始密码（≥8 位）">
+    <select id="nu-role">
+      <option value="user">普通用户</option>
+      <option value="admin">系统管理员</option>
+    </select>
+    <button class="btn primary" id="btn-create">创建</button>
+    <span class="hint">密码以 bcrypt 哈希存库；系统不提供任何"默认密码"。</span>
+  </div>
+</div>
+
+<div class="card" style="padding:0; overflow-x:auto;">
+  <table>
+    <thead><tr><th>#</th><th>用户名</th><th>显示名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="hint">
+    <b>说明</b><br>
+    1. 角色即权限码集合：<b>admin</b> 含用户/知识库/提示词/审计/日志管理权；
+       <b>user</b> 只有聊天、自己会话、异常事件查看。<br>
+    2. 系统保护最后一个启用中的管理员：不能把它降级或禁用（接口层校验）。<br>
+    3. <b>签核权不在角色里</b>：<code>anomaly:review:submit</code> 首期不授予任何角色，含 admin。
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+const H = { 'X-Requested-With': 'XMLHttpRequest' };
+const $ = (id) => document.getElementById(id);
+const ROLE_TEXT = { admin: '系统管理员', user: '普通用户' };
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function fmt(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '-'; }
+function showMsg(t, ok) {
+  const el = $('msg'); el.className = 'msg ' + (ok ? 'ok' : 'err'); el.textContent = t;
+  setTimeout(() => { el.className = 'msg'; }, 6000);
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/users');
+    if (r.status === 401) { location.href = '/login?next=/admin/users'; return; }
+    const d = await r.json();
+    if (!r.ok) { showMsg(d.message || '加载失败', false); return; }
+    $('rows').innerHTML = (d.items || []).map(u => {
+      const role = (u.roles[0] || {}).code || 'user';
+      const roleName = ROLE_TEXT[role] || role;
+      return `<tr>
+        <td>${u.id}</td>
+        <td>${esc(u.username)}</td>
+        <td>${esc(u.display_name)}</td>
+        <td><span class="tag ${role}">${roleName}</span></td>
+        <td>${u.is_active ? '启用' : '<span class="tag off">已禁用</span>'}</td>
+        <td>${fmt(u.created_at)}</td>
+        <td>
+          <button class="btn small" onclick="setRole(${u.id}, '${role === 'admin' ? 'user' : 'admin'}')">
+            改为${role === 'admin' ? '普通用户' : '管理员'}</button>
+          <button class="btn small danger" onclick="setActive(${u.id}, ${u.is_active ? 'false' : 'true'})">
+            ${u.is_active ? '禁用' : '启用'}</button>
+        </td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="7" class="empty">暂无用户</td></tr>';
+  } catch (e) { showMsg('加载失败：' + e.message, false); }
+}
+
+async function patch(id, body) {
+  const r = await fetch(`/api/users/${id}`, {
+    method: 'PATCH', headers: { ...H, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const d = await r.json();
+  showMsg(d.message || (r.ok ? '已更新' : '更新失败'), r.ok);
+  if (r.ok) load();
+}
+
+function setRole(id, role) {
+  if (!confirm(`确认把该用户改为「${ROLE_TEXT[role]}」？`)) return;
+  patch(id, { role });
+}
+function setActive(id, active) {
+  if (!confirm(active ? '确认启用该账号？' : '确认禁用该账号？禁用后立即无法登录。')) return;
+  patch(id, { is_active: active });
+}
+
+$('btn-create').addEventListener('click', async () => {
+  const username = $('nu-name').value.trim();
+  const password = $('nu-pass').value;
+  if (!username || password.length < 8) {
+    showMsg('用户名不能为空，密码至少 8 位', false); return;
+  }
+  const r = await fetch('/api/users', {
+    method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, role: $('nu-role').value }),
+  });
+  const d = await r.json();
+  showMsg(d.message || (r.ok ? '已创建' : '创建失败'), r.ok);
+  if (r.ok) { $('nu-name').value = ''; $('nu-pass').value = ''; load(); }
+});
+
+load();
+</script>
+{% endblock %}

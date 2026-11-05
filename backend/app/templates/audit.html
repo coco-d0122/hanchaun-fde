@@ -1,0 +1,245 @@
+{% extends "admin_base.html" %}
+{% block title %}AI 对话审计{% endblock %}
+{% block pagetitle %}AI 对话审计{% endblock %}
+
+{% block head %}
+<style>
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .filters label { font-size: 12.5px; color: var(--text-2); }
+  .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: none; z-index: 20; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 640px; max-width: 92vw;
+    background: #fff; border-left: 1px solid var(--border); z-index: 21;
+    display: none; flex-direction: column;
+  }
+  .drawer.open, .drawer-mask.open { display: flex; }
+  .drawer-head {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .drawer-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+  .kv { font-size: 13px; line-height: 1.9; }
+  .kv b { color: var(--text-2); font-weight: 600; }
+  .block { background: #fafbfc; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 8px 0; white-space: pre-wrap; font-size: 13px; line-height: 1.8; }
+  .flag { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 12.5px; }
+  .flag .t { font-weight: 600; }
+  .status-pending { color: var(--warn); }
+  .status-processed { color: var(--ok); }
+  .status-dismissed { color: var(--text-2); }
+  .badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px; background:#eef1f5; color:#57606a; }
+  .badge.warn { background:#fdeaea; color:#dc2626; }
+  .badge.ok { background:#e6f6ec; color:#16a34a; }
+  textarea.note { width: 100%; min-height: 56px; border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 12.5px; }
+  td.act { white-space: nowrap; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="msg" class="msg"></div>
+
+<div class="card">
+  <div class="filters">
+    <label>用户ID <input type="number" min="1" id="f-user" placeholder="如 2" style="width:90px"></label>
+    <label>起 <input type="date" id="f-from"></label>
+    <label>止 <input type="date" id="f-to"></label>
+    <label>模式
+      <select id="f-mode">
+        <option value="">全部</option><option value="knowledge">知识问答</option><option value="anomaly">异常分析</option>
+      </select>
+    </label>
+    <label>涉异常
+      <select id="f-anomaly"><option value="">全部</option><option value="true">仅涉及</option><option value="false">不含</option></select>
+    </label>
+    <label>风险标记
+      <select id="f-flag"><option value="">全部</option><option value="true">有标记</option><option value="false">无标记</option></select>
+    </label>
+    <label>关键词 <input type="text" id="f-kw" placeholder="问题或回答" style="width:150px"></label>
+    <button class="btn primary" id="btn-search">查询</button>
+    <button class="btn" id="btn-reset">重置</button>
+  </div>
+  <div class="hint" id="sum">共 0 条</div>
+</div>
+
+<div class="card" style="padding:0; overflow-x:auto;">
+  <table>
+    <thead>
+      <tr>
+        <th>时间</th><th>用户</th><th>模式</th><th>生成状态</th><th>提示词</th>
+        <th>关联异常</th><th>溯源</th><th>标记</th><th>回答摘要</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="10" class="empty">加载中…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="drawer-mask" id="mask"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <b>消息详情</b>
+    <button class="btn small" id="btn-close">关闭</button>
+  </div>
+  <div class="drawer-body" id="detail">加载中…</div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+const H = { 'X-Requested-With': 'XMLHttpRequest' };
+const $ = (id) => document.getElementById(id);
+const STATUS_TEXT = { complete: '完整', interrupted: '已中断', failed: '失败', generating: '生成中' };
+const FLAG_STATUS = { pending: '待处理', processed: '已处理', dismissed: '已驳回' };
+let flagTypes = [];
+let currentMsgId = null;
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function fmt(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '-'; }
+function showMsg(t, ok) {
+  const el = $('msg'); el.className = 'msg ' + (ok ? 'ok' : 'err'); el.textContent = t;
+  setTimeout(() => { el.className = 'msg'; }, 6000);
+}
+
+async function loadFlagTypes() {
+  try {
+    const r = await fetch('/api/audit/flag-types');
+    if (r.ok) flagTypes = (await r.json()).items || [];
+  } catch (e) { /* 静默 */ }
+}
+
+async function search() {
+  const p = new URLSearchParams();
+  const map = { 'f-user': 'user_id', 'f-from': 'date_from', 'f-to': 'date_to',
+                'f-mode': 'mode', 'f-anomaly': 'has_anomaly', 'f-flag': 'has_flag',
+                'f-kw': 'keyword' };
+  for (const [id, key] of Object.entries(map)) {
+    const v = $(id).value.trim();
+    if (v) p.set(key, v);
+  }
+  try {
+    const r = await fetch('/api/audit/conversations?' + p.toString());
+    if (r.status === 401) { location.href = '/login?next=/admin/audit'; return; }
+    const data = await r.json();
+    if (!r.ok) { showMsg(data.message || '查询失败', false); return; }
+    render(data);
+  } catch (e) { showMsg('查询失败：' + e.message, false); }
+}
+
+function render(data) {
+  $('sum').textContent = `共 ${data.total} 条（当前展示 ${(data.items || []).length} 条）`;
+  const rows = (data.items || []).map(m => {
+    const st = STATUS_TEXT[m.status] || m.status || '-';
+    const g = m.guardrail_passed === false ? '<span class="badge warn">溯源未过</span>'
+            : m.guardrail_passed === true ? '<span class="badge ok">溯源通过</span>' : '-';
+    return `<tr>
+      <td>${fmt(m.created_at)}</td>
+      <td>${esc(m.username)}</td>
+      <td>${m.mode === 'anomaly' ? '异常分析' : '知识问答'}</td>
+      <td>${st}</td>
+      <td>${m.prompt_version_no ? 'v' + m.prompt_version_no : '-'}</td>
+      <td>${m.anomaly_id ? esc(m.anomaly_id) : '-'}</td>
+      <td>${g}</td>
+      <td>${m.flag_count ? `<span class="badge warn">${m.flag_count}</span>` : '-'}</td>
+      <td title="${esc(m.excerpt)}">${esc((m.excerpt || '').slice(0, 40))}…</td>
+      <td class="act"><button class="btn small" onclick="openDetail(${m.message_id})">详情</button></td>
+    </tr>`;
+  }).join('');
+  $('rows').innerHTML = rows || '<tr><td colspan="10" class="empty">没有符合条件的记录</td></tr>';
+}
+
+async function openDetail(messageId) {
+  currentMsgId = messageId;
+  $('mask').classList.add('open'); $('drawer').classList.add('open');
+  $('detail').textContent = '加载中…';
+  const r = await fetch(`/api/audit/conversations/${messageId}`);
+  const d = await r.json();
+  if (!r.ok) { $('detail').textContent = d.message || '加载失败'; return; }
+
+  const anomalyBlock = d.anomaly ? `
+    <div class="block"><b>关联异常</b>：${esc(d.anomaly.anomaly_id)}　电表 ${esc(d.anomaly.meter_id)}　
+    楼栋 ${esc(d.anomaly.building_id)}　状态 ${esc(d.anomaly.status)}<br>
+    ${esc(d.anomaly.anomaly_type)}（${esc(d.anomaly.rule_code)}）<br>${esc(d.anomaly.summary)}</div>` : '';
+
+  const citeBlock = (d.citations || []).map(c =>
+    `<div class="block"><b>[${c.source_type === 'anomaly_data' ? '证据' : '知识'}]</b>
+     ${esc(c.source_file)} <span class="badge">${esc(c.chunk_id)}</span><br>${esc(c.excerpt)}</div>`
+  ).join('') || '<div class="block">无引用</div>';
+
+  const flags = (d.flags || []).map(f => `
+    <div class="flag">
+      <span class="t">${esc(f.flag_type_name)}</span>
+      <span class="status-${f.status}">（${FLAG_STATUS[f.status] || f.status}）</span>
+      由 ${esc(f.created_by_name)} 于 ${fmt(f.created_at)}<br>
+      ${esc(f.note || '（无备注）')}
+      <div style="margin-top:6px;">
+        ${['pending','processed','dismissed'].map(s =>
+          `<button class="btn small" onclick="updateFlag(${f.id}, '${s}')">置为${FLAG_STATUS[s]}</button>`).join(' ')}
+      </div>
+    </div>`).join('') || '<div class="hint">暂无风险标记</div>';
+
+  $('detail').innerHTML = `
+    <div class="kv">
+      <b>会话</b>：${esc(d.session_title)} <span class="badge">${esc(d.session_id)}</span><br>
+      <b>用户</b>：${esc(d.username)}　<b>模式</b>：${d.mode === 'anomaly' ? '异常分析' : '知识问答'}<br>
+      <b>生成状态</b>：${STATUS_TEXT[d.status] || d.status}　
+      <b>提示词版本</b>：${d.prompt_version_no ? 'v' + d.prompt_version_no : '（未记录，迁移前消息）'}<br>
+      <b>数值溯源</b>：${d.guardrail_passed === null ? '未校验（知识问答）'
+        : d.guardrail_passed ? '通过' : '未通过'}<br>
+      <b>时间</b>：${fmt(d.created_at)}
+    </div>
+    ${d.error_info ? `<div class="block"><b>错误信息</b><br>${esc(d.error_info)}</div>` : ''}
+    <div style="margin-top:12px;"><b>问题</b></div>
+    <div class="block">${esc(d.question || '（未找到对应提问）')}</div>
+    <div><b>回答</b></div>
+    <div class="block">${esc(d.answer || '（空）')}</div>
+    ${anomalyBlock}
+    <div style="margin-top:12px;"><b>引用（${(d.citations || []).length}）</b></div>
+    ${citeBlock}
+    <div style="margin-top:16px;"><b>风险标记</b></div>
+    <div id="flags">${flags}</div>
+    <div style="margin-top:10px;">
+      <select id="flag-type">${flagTypes.map(t => `<option value="${t.code}">${t.name}</option>`).join('')}</select>
+      <textarea class="note" id="flag-note" placeholder="备注（可选，说明为什么标记）"></textarea>
+      <button class="btn primary small" id="btn-flag">添加标记</button>
+    </div>`;
+  $('btn-flag').addEventListener('click', addFlag);
+}
+
+async function addFlag() {
+  const body = { message_id: currentMsgId, flag_type: $('flag-type').value, note: $('flag-note').value };
+  const r = await fetch('/api/audit/flags', {
+    method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const d = await r.json();
+  showMsg(d.message || (r.ok ? '已标记' : '标记失败'), r.ok && d.ok);
+  if (r.ok) { openDetail(currentMsgId); search(); }
+}
+
+async function updateFlag(id, status) {
+  const r = await fetch(`/api/audit/flags/${id}`, {
+    method: 'PATCH', headers: { ...H, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  const d = await r.json();
+  showMsg(d.message || (r.ok ? '已更新' : '更新失败'), r.ok && d.ok);
+  if (r.ok) { openDetail(currentMsgId); search(); }
+}
+
+$('btn-search').addEventListener('click', search);
+$('btn-reset').addEventListener('click', () => {
+  ['f-user','f-from','f-to','f-kw'].forEach(id => $(id).value = '');
+  ['f-mode','f-anomaly','f-flag'].forEach(id => $(id).value = '');
+  search();
+});
+$('btn-close').addEventListener('click', () => {
+  $('mask').classList.remove('open'); $('drawer').classList.remove('open');
+});
+$('mask').addEventListener('click', () => {
+  $('mask').classList.remove('open'); $('drawer').classList.remove('open');
+});
+
+loadFlagTypes().then(search);
+</script>
+{% endblock %}

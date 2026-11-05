@@ -1,0 +1,72 @@
+{% extends "admin_base.html" %}
+{% block title %}工作台{% endblock %}
+{% block pagetitle %}工作台{% endblock %}
+
+{% block head %}
+<style>
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .stat { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
+  .stat .n { font-size: 26px; font-weight: 700; color: var(--blue-dark); line-height: 1.2; }
+  .stat .l { color: var(--text-2); font-size: 12.5px; margin-top: 4px; }
+  .stat .sub { color: #9aa2ac; font-size: 11.5px; margin-top: 2px; }
+  .stat.warn .n { color: var(--warn); }
+  .quick { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .mono { font-family: Consolas, monospace; font-size: 12px; color: var(--text-2); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="cards">
+  <div class="stat"><div class="n">{{ stats.users_total }}</div>
+    <div class="l">系统用户</div><div class="sub">启用 {{ stats.users_active }} 人</div></div>
+  <div class="stat"><div class="n">{{ stats.docs_published }}</div>
+    <div class="l">已发布知识文档</div><div class="sub">参与检索的文档数</div></div>
+  <div class="stat"><div class="n">{{ stats.conversations_today }}</div>
+    <div class="l">今日会话</div><div class="sub">今日回答 {{ stats.answers_today }} 条</div></div>
+  <div class="stat warn"><div class="n">{{ stats.anomalies_pending_review }}</div>
+    <div class="l">待复核异常</div><div class="sub">AI 已分析、等业务签核</div></div>
+  <div class="stat {% if stats.flags_pending %}warn{% endif %}"><div class="n">{{ stats.flags_pending }}</div>
+    <div class="l">待处理风险标记</div><div class="sub">审计页可处理</div></div>
+</div>
+
+<div class="card">
+  <div style="font-weight:600; margin-bottom:10px;">快捷入口</div>
+  <div class="quick">
+    <a class="btn" href="/">进入聊天问答</a>
+    <a class="btn" href="/admin/kb">管理知识库</a>
+    <a class="btn" href="/admin/prompts">编辑提示词</a>
+    <a class="btn" href="/admin/audit">对话审计</a>
+    <a class="btn" href="/admin/anomalies">异常事件</a>
+    <a class="btn" href="/admin/users">用户管理</a>
+  </div>
+</div>
+
+<div class="card" style="padding:0; overflow-x:auto;">
+  <div style="padding:14px 16px; font-weight:600; border-bottom:1px solid var(--border);">最近操作日志（10 条）</div>
+  <table>
+    <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>结果</th><th>摘要</th></tr></thead>
+    <tbody>
+      {% for l in stats.recent_logs %}
+      <tr>
+        <td>{{ l.created_at[:16] | replace('T', ' ') }}</td>
+        <td>{{ l.username }}</td>
+        <td>{{ l.action }}</td>
+        <td>{{ l.object_type }}{% if l.object_id %} #{{ l.object_id }}{% endif %}</td>
+        <td>{{ '成功' if l.result == 'success' else l.result }}</td>
+        <td class="mono">{{ l.detail }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">暂无操作日志</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="hint">
+    <b>口径</b>：今日会话/回答按当日 00:00 起统计；待复核异常只统计 <code>pending_review</code>；
+    风险标记只统计 <code>pending</code>。本阶段系统不产生任何业务结论——
+    异常最终状态需业务角色签核，管理员账号也没有该权限。
+  </div>
+</div>
+{% endblock %}

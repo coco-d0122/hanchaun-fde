@@ -1,7 +1,8 @@
-# 瀚川工业园 · Web 后端与聊天界面（阶段4 + 阶段5第一/二批）
+# 瀚川工业园 · Web 后端与聊天界面（阶段4 + 阶段5第一/二/三/四批）
 
 基于阶段3原型核心模块（检索 / 规则引擎 / Guardrail 原样迁移）构建的 FastAPI + SQLite + SSE 流式聊天系统，
-含登录鉴权与 RBAC 权限（第一批）、管理后台与知识库文档管理（第二批）。
+含登录鉴权与 RBAC 权限（一批）、管理后台与知识库（二批）、提示词版本化（三批）、
+对话与异常审计（四批）。
 
 ## 运行
 
@@ -53,10 +54,22 @@ INIT_PASSWORD='用户密码'  .venv/Scripts/python -m app.init_admin --username 
 | PUT | `/api/prompts/{code}` | 保存编辑 → 新版本并立即生效（`prompt:write`） |
 | GET | `/api/prompts/{code}/versions` | 版本历史（`prompt:read`） |
 | POST | `/api/prompts/versions/{version_id}/restore` | 恢复历史版本（生成新版本号，`prompt:write`） |
+| GET | `/api/audit/conversations` | 对话审计列表（六条件筛选，`audit:conversation:read`） |
+| GET | `/api/audit/conversations/{message_id}` | 消息审计详情（引用/提示词版本/生成状态/关联异常） |
+| GET | `/api/audit/flag-types` | 风险标记 7 类字典 |
+| GET | `/api/audit/flags` | 风险标记列表 |
+| POST | `/api/audit/flags` | 添加风险标记（`audit:flag:write` + CSRF） |
+| PATCH | `/api/audit/flags/{id}` | 更新标记状态（待处理/已处理/已驳回） |
+| GET | `/api/anomalies/{id}/reviews` | 人工复核记录（只读；本阶段恒为空） |
 | GET | `/api/health` | 健康检查（知识库 / LLM 状态） |
 | GET | `/login` + `/` | 登录页 + 聊天页（未登录 302 跳登录） |
-| GET | `/admin` → `/admin/kb` | 管理后台（知识库管理页，未登录跳登录、无权限 403 页） |
-| GET | `/admin/prompts` | 管理后台 · AI 提示词管理页 |
+| GET | `/admin` → `/admin/dashboard` | 管理后台入口（工作台） |
+| GET | `/admin/dashboard` | 工作台：概览卡片 + 最近 10 条操作日志 |
+| GET | `/admin/users` | 用户管理（建号/改角色/禁用） |
+| GET | `/admin/kb` | 知识库管理页 |
+| GET | `/admin/prompts` | AI 提示词管理页 |
+| GET | `/admin/audit` | AI 对话审计页 |
+| GET | `/admin/anomalies` | 能耗异常事件审计页（只读） |
 
 **鉴权规则**：所有业务接口需登录（未登录 401 中文错误）；权限不足 403；
 所有 POST/PATCH 写请求须带 `X-Requested-With: XMLHttpRequest` 头（CSRF 防线，
@@ -146,6 +159,22 @@ PUT 保存 → 插入新版本 + 移动指针 + 立即失效缓存 → 下一个
   `number_trace_guard` 仍拦截编造数值（98765/42 → `passed=false`）。
 - 并发实测：一个 SSE 请求进行中保存模板，该请求仍以旧版本完整结束（17 个 token 事件 +
   `status=complete`），版本号是它开始时的快照。
+
+## 对话审计与异常审计（第四批）
+
+审计单元是**一条 assistant 消息**：问题、回答、引用、提示词版本、生成状态、关联异常都在一处。
+
+- 六条件组合筛选：用户 / 时间范围 / 会话号 / 模式 / 是否涉异常 / 是否有风险标记，+ 关键词。
+- 风险标记 7 类（缺证据/编造规则/推测当结论/建议改数/建议绕复核/建议控设备/与规则冲突），
+  状态 `pending → processed / dismissed`，每次标记与流转都写 `audit_logs`（`action=flag_update`）。
+- **异常六态机**：`pending_analysis → pending_review → reviewing → confirmed / dismissed / closed`。
+  本阶段系统只做第一步推进（AI 分析完成即 `pending_analysis → pending_review`），
+  其余由业务签核——`POST /api/anomalies/{id}/reviews` **不注册路由**（实测 405），
+  页面"提交复核"按钮渲染为禁用态并注明原因。
+- 规则结果（原始）与 AI 草稿**分离展示**：AI 草稿只挂在对话消息上，永不回写
+  `anomaly_events.rule_result` / `evidence`。
+- 页面闸门：`/admin/anomalies` 要求 `anomaly:read` + `audit:conversation:read`——
+  普通用户虽然能看事件（聊天页需要），但进不了含 AI 草稿与复核记录的后台审计视图。
 
 ## 边界声明（当前明确不做）
 

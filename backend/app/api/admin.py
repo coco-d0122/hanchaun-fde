@@ -58,6 +58,46 @@ async def _permission_codes(request: Request, user: User) -> list[str]:
     return sorted({c for r in user.roles for c in mapping.get(r.code, [])})
 
 
+@router.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page(request: Request,
+                         user: User | None = Depends(get_current_user_optional)):
+    """工作台（阶段5补全）：概览卡片 + 最近 10 条操作日志。
+
+    门禁用 user:read：工作台是管理员视角的总览，普通用户没有该权限码。
+    """
+    if user is None:
+        return RedirectResponse("/login?next=/admin/dashboard", status_code=302)
+    if "user:read" not in await _permission_codes(request, user):
+        return _forbidden(user, "user:read")
+
+    async with session_factory() as db:
+        async with db.begin():
+            stats = await repo.dashboard_stats(db)
+    # detail 是 JSON 列：转成可读文本再交给模板（Jinja 直接渲染 dict 会变成单引号 repr）
+    for row in stats["recent_logs"]:
+        row["detail"] = json.dumps(row["detail"], ensure_ascii=False)
+
+    request.state.user = user
+    return _templates.TemplateResponse(request, "dashboard.html", {
+        "username": user.username, "nav": "dashboard", "stats": stats,
+    })
+
+
+@router.get("/users", response_class=HTMLResponse)
+async def users_page(request: Request,
+                     user: User | None = Depends(get_current_user_optional)):
+    """用户管理页（阶段5补全）：列表 / 建号 / 改角色 / 禁用启用。"""
+    if user is None:
+        return RedirectResponse("/login?next=/admin/users", status_code=302)
+    if "user:read" not in await _permission_codes(request, user):
+        return _forbidden(user, "user:read")
+
+    request.state.user = user
+    return _templates.TemplateResponse(request, "users.html", {
+        "username": user.username, "nav": "users",
+    })
+
+
 def _forbidden(user: User, perm: str) -> HTMLResponse:
     return HTMLResponse(
         _env.from_string(_FORBIDDEN_TPL).render(username=user.username, perm=perm),
@@ -101,4 +141,41 @@ async def prompts_page(request: Request,
         "username": user.username,
         "nav": "prompts",
         "template_codes": [("qa", "知识库问答模板"), ("anomaly", "异常分析模板")],
+    })
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_page(request: Request,
+                     user: User | None = Depends(get_current_user_optional)):
+    """AI 对话审计页（阶段5第四批）：六条件筛选 + 消息详情 + 风险标记。"""
+    if user is None:
+        return RedirectResponse("/login?next=/admin/audit", status_code=302)
+    if "audit:conversation:read" not in await _permission_codes(request, user):
+        return _forbidden(user, "audit:conversation:read")
+
+    request.state.user = user
+    return _templates.TemplateResponse(request, "audit.html", {
+        "username": user.username, "nav": "audit",
+    })
+
+
+@router.get("/anomalies", response_class=HTMLResponse)
+async def anomalies_page(request: Request,
+                         user: User | None = Depends(get_current_user_optional)):
+    """能耗异常事件审计页（阶段5第四批）：规则结果与 AI 草稿分离展示，复核只读。
+
+    ★ 为什么除 anomaly:read 还要 audit:conversation:read：
+      按方案页面清单，本页是 admin 专属的"审计视图"（含 AI 分析草稿、复核记录）。
+      而 anomaly:read 权限矩阵里 user 也有（聊天页要能看事件），单靠它会让普通用户
+      进入后台审计页。用"审计视角"权限做闸门，语义比新造一个页面权限更准确。
+    """
+    if user is None:
+        return RedirectResponse("/login?next=/admin/anomalies", status_code=302)
+    perms = await _permission_codes(request, user)
+    if "anomaly:read" not in perms or "audit:conversation:read" not in perms:
+        return _forbidden(user, "audit:conversation:read")
+
+    request.state.user = user
+    return _templates.TemplateResponse(request, "anomalies.html", {
+        "username": user.username, "nav": "anomalies",
     })
