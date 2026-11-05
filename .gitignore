@@ -14,6 +14,12 @@ env/
 prototype/.cache/
 prototype/output/
 
+# ---- 阶段4后端运行产物（可重新生成）----
+backend/.cache/
+backend/hanchuan.db
+backend/hanchuan.db-wal
+backend/hanchuan.db-shm
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/

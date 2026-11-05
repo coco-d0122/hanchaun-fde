@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>瀚川工业园能耗异常定位智能体</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <!-- 顶部网络异常横幅（fetch reject 时显示） -->
+  <div id="net-banner" class="net-banner hidden">网络连接异常，请检查网络后重试</div>
+
+  <div class="layout">
+    <!-- ============ 左栏：会话与入口 ============ -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-name">瀚川工业园</div>
+        <div class="brand-sub">能耗异常定位智能体</div>
+      </div>
+
+      <button class="btn-new" id="btn-new" title="新建会话">＋ 新建会话</button>
+
+      <div class="side-section-title">历史会话</div>
+      <div class="session-list" id="session-list"></div>
+
+      <div class="side-section-title">快捷入口</div>
+      <div class="quick-entries">
+        <button class="quick-entry" data-mode="knowledge" title="能源管理知识库问答">
+          <span class="qe-icon">📄</span> 能源知识问答
+        </button>
+        <button class="quick-entry" id="btn-anomaly-panel" title="选择异常事件进行 AI 分析">
+          <span class="qe-icon">⚡</span> 能耗异常分析
+        </button>
+      </div>
+
+      <div class="side-foot">模拟数据演示 · AI 结论须经人工复核</div>
+    </aside>
+
+    <!-- ============ 中间：聊天主区 ============ -->
+    <main class="chat">
+      <header class="chat-head">
+        <button class="sidebar-toggle" id="sidebar-toggle" title="折叠/展开">☰</button>
+        <div class="chat-title" id="chat-title">新会话</div>
+        <span class="mode-tag" id="mode-tag">● 知识问答</span>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="empty-hint" id="empty-hint">
+          <div class="eh-title">向智能体提问</div>
+          <div class="eh-item">📄 能源管理知识问答：制度、规范、排查流程</div>
+          <div class="eh-item">⚡ 能耗异常分析：选择左侧异常事件，或直接问"为什么 M-002 用电量突然增加？"</div>
+        </div>
+      </div>
+
+      <footer class="composer">
+        <div class="composer-row">
+          <textarea id="input" placeholder="输入问题（最多 500 字）…"
+                    maxlength="500" rows="1"></textarea>
+          <button class="btn-send" id="btn-send">发送</button>
+          <button class="btn-stop hidden" id="btn-stop" title="停止生成">■ 停止</button>
+        </div>
+        <div class="composer-meta">
+          <span class="mode-switch">
+            模式：
+            <label><input type="radio" name="mode" value="knowledge" checked> 知识问答</label>
+            <label><input type="radio" name="mode" value="anomaly"> 异常分析</label>
+          </span>
+          <span class="char-count" id="char-count">0/500</span>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- ============ 异常事件面板（右侧滑出） ============ -->
+  <div class="anomaly-mask hidden" id="anomaly-mask"></div>
+  <div class="anomaly-panel hidden" id="anomaly-panel">
+    <div class="ap-head">
+      <span>异常事件</span>
+      <button class="ap-close" id="ap-close">×</button>
+    </div>
+    <div class="ap-list" id="ap-list">
+      <div class="ap-loading">正在加载异常事件…</div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
