@@ -1,0 +1,17 @@
+erDiagram
+    User ||--o{ UserRole : has
+    Role ||--o{ UserRole : grants
+    Role ||--o{ RolePermission : has
+    Permission ||--o{ RolePermission : in
+    Conversation ||--o{ Message : contains
+    Message ||--o{ MessageCitation : cites
+    Message ||--o| ConversationAuditFlag : flagged
+    AnomalyEventRow ||--o{ AnomalyEvidenceRow : has
+    AnomalyEventRow ||--o{ ReviewRecord : reviewed_by
+    AgentTask ||--o{ AgentToolCall : calls
+    AgentTask ||--o{ AgentExecutionLog : logs
+    AgentTask ||--o| AgentReportDraft : produces
+    KnowledgeDocument ||--o{ KnowledgeDocumentVersion : versions
+    PromptTemplate ||--o{ PromptTemplateVersion : versions
+    User ||--o{ LlmUsage : consumes
+    User ||--o{ Conversation : owns
