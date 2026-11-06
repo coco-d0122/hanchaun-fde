@@ -291,6 +291,12 @@ curl -s localhost:8000/api/health | python -m json.tool
 - [docs/acceptance/阶段11_未完成项补齐记录_v1.0.md](docs/acceptance/阶段11_未完成项补齐记录_v1.0.md)
 - 各阶段设计与验收记录：[docs/phases/](docs/phases/)
 
+## SRC 阶段交付（可下载）
+
+- [src/mvp_source.zip](src/mvp_source.zip) —— MVP 全部源码打包（229 文件，已排除密钥/缓存/数据库/日志，打包校验通过）
+- [src/initial_qa_assistant.zip](src/initial_qa_assistant.zip) —— 阶段 1 初始问答助手原型（命令行单文件版 + 演示数据 + 知识库样本）
+- [src/README.md](src/README.md) —— 交付包说明：启动方法、演示步骤、三个真实人工确认点验证结果、已实现/未实现清单
+
 ## 许可
 
 内部试点项目，保留所有权利，未授予开源许可。详见 [LICENSE](LICENSE)。
