@@ -1,0 +1,25 @@
+=== 1. /api/health（知识库就绪 23 chunks）
+{"status":"ok","kb":{"ready":true,"chunks":23,"cache_hit":false},"llm":{"provider":"mock","model":"deepseek-chat","ready":false}}
+=== 2. 登录 POST /api/auth/login
+{"user":{"id":1,"username":"smokeadmin","display_name":"smokeadmin","roles":["admin"]},"expires_at":"2026-11-06T11:09:01.615927+00:00"}
+=== 3. GET /api/auth/me
+{"id":1,"username":"smokeadmin","display_name":"smokeadmin","roles":["admin"],"permissions":["anomaly:read","audit:conversation:read","audit:flag:write","chat:use","kb:delete","kb:read","kb:write","log:read","prompt:read
+=== 4. 知识库 GET /api/kb/documents
+{"total":6,"items":[{"id":6,"filename":"06_人工复核与异常处理规范.md","doc_type":"review","status":"published","error_info":"","created_at":"2026-11-06T03:07:14.085230","updated_at":"2026-11-06T03:07:14.088929","file_path":"knowledge/samples/06_人工复核与异常处理规范.md","version_no":1,"chunk_count":4,"content_hash":"f9cc8c68ae67596a","uploaded_by_name":null},{"id":5,"filenam
+=== 5. 异常列表 GET /api/anomalies
+{"items":[{"anomaly_id":"AN-20261023-0001","meter_id":"M-002","building_id":"B1","anomaly_type":"电表 M-002 倍率变化待核查（10 → 100）","rule_code":"R04_RATIO_CHANGE","severity":"high","detected_at":"2026-10-23T09:45:00","status":"pending_analysis","evidence_count":11,"summary":"自 202
+=== 6. Agent 分析 SSE（前 6 事件）
+event: session
+data: {"session_id": "conv-23ffa97980a4", "created": true}
+
+event: task
+data: {"task_id": "TASK-708420a16b24", "current_step": "init", "data_queried": false, "config_checked": false, "validation_status": "not_run", "anomaly_status":
+
+=== 7. 复核记录 GET /api/anomalies/{id}/reviews（取列表第一条）
+anomaly_id=AN-20261023-0001
+{"anomaly_id":"AN-20261023-0001","total":0,"items":[],"note":"本阶段不提供提交复核接口（签核权待业务角色上线后授予）"}
+=== 8. 指标 GET /api/metrics
+http_requests_total{method="GET",code="2xx",path="/api/anomalies"} 3
+http_requests_total{method="GET",code="2xx",path="/api/auth"} 2
+http_requests_total{method="GET",code="2xx",path="/api/health"} 2
+http_requests_total{method="GET",code="2xx",path="/api/kb"} 1

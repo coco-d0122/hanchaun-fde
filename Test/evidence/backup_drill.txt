@@ -1,0 +1,12 @@
+    "agent_tasks": 0,
+    "agent_tool_calls": 0,
+    "agent_report_drafts": 0,
+    "knowledge_documents": 6,
+    "audit_logs": 19
+  },
+  "consistent": true,
+  "generated_at": "2026-11-06T03:06:14.189384+00:00"
+}
+
+结论： 恢复成功，行数一致 ✓
+报告已写入：D:\WorkBuddy-Projects\2026-10-30-09-23-10\eval\restore_drill_report.json

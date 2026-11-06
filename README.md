@@ -14,6 +14,26 @@
 
 ---
 
+## 📦 课程交付总入口（DOCS / SRC / TEST 三阶段）
+
+### DOCS 阶段（需求·设计·报价·手册）→ [docs/course-deliverables/](docs/course-deliverables/)
+- 行业分析：[MD](docs/course-deliverables/04_行业分析/工业园区能源管理与AI应用行业分析.md) · [DOCX](docs/course-deliverables/04_行业分析/工业园区能源管理与AI应用行业分析.docx)
+- 需求定义与验收标准：[DOCX](docs/course-deliverables/06_需求分析/瀚川工业园能耗智能体系统需求定义与验收标准.docx)
+- 详细设计方案：[DOCX](docs/course-deliverables/07_详细设计/瀚川工业园能耗智能体系统详细设计方案.docx)
+- 报价与投入产出分析：[DOCX](docs/course-deliverables/08_项目报价/瀚川工业园AI能耗项目报价与投入产出分析.docx)
+- 上线交付运行手册：[DOCX](docs/course-deliverables/09_上线交付/瀚川工业园能耗智能体系统上线交付运行手册.docx)
+- 总目录与完成情况：[docs/course-deliverables/00_交付索引/](docs/course-deliverables/00_交付索引/)
+
+### SRC 阶段（源码交付）→ [src/](src/)
+- [MVP 源码包 mvp_source.zip](src/mvp_source.zip) · [初始问答助手原型 initial_qa_assistant.zip](src/initial_qa_assistant.zip) · [交付说明](src/README.md)
+
+### TEST 阶段（测试交付）→ [Test/](Test/)
+- 量化测试计划：[DOCX](Test/量化测试计划.docx)
+- [正常流程测试报告.docx](Test/正常流程测试报告.docx) · [边界情况测试报告.docx](Test/边界情况测试报告.docx) · [对抗性测试报告.docx](Test/对抗性测试报告.docx) · [权限安全测试报告.docx](Test/权限安全测试报告.docx) · [故障恢复测试报告.docx](Test/故障恢复测试报告.docx)
+- [完成情况.md](Test/完成情况.md)（pytest 74 passed / 评测 30 用例全过 / 真实证据存于 Test/evidence/）
+
+---
+
 ## 一、项目简介
 
 园区 240 块电表的抄表数据每 15 分钟一条，人工排查一次异常平均要 3 天：先导出数据、再对总分表、

@@ -1,0 +1,3 @@
+=========================== short test summary info ===========================
+XFAIL tests/unit/test_rag_evidence.py::test_annual_leave_question_rejected - 已知残留风险：库外问题出现高覆盖率词时可能放行（阶段8报告已登记）
+22 passed, 1 xfailed in 16.56s

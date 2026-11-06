@@ -1,0 +1,20 @@
+PASS  草稿标注强制复核风险  —— multiplier_anomaly
+PASS  草稿账本可查询且为 pending
+PASS  报告版本不一致被拒  —— DRAFT_VERSION_MISMATCH
+PASS  缺少 CSRF 头被拒
+PASS  他人确认草稿被拒（身份二次校验）
+PASS  确认后返回复核请求编号  —— HR-20261106110514-af73
+PASS  确认状态为 confirmed 且提示不等于签核
+PASS  同一幂等键重复确认不重复建单
+PASS  不同幂等键重复确认也不重复建单
+PASS  确认未把异常改为 confirmed/closed  —— {'pending_analysis'}
+PASS  确认未写签核结论表 review_records
+PASS  证据集被改动后确认被拒  —— EVIDENCE_INVALID
+PASS  取消后未执行普通报告提交
+PASS  强制复核风险独立保留（取消也建风险请求）  —— HR-20261106110516-f1ac
+PASS  重复取消幂等
+
+================================================================
+总计 19 项，通过 19 项，失败 0 项
+....                                                                     [100%]
+4 passed in 40.41s
