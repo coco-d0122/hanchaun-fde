@@ -1,0 +1,40 @@
+{
+  "db": "D:\\WorkBuddy-Projects\\2026-10-30-09-23-10\\hanchuan.db",
+  "steps": [
+    {
+      "step": "backup",
+      "seconds": 0.311,
+      "file": "D:\\WorkBuddy-Projects\\2026-10-30-09-23-10\\eval\\drill_tmp\\hanchuan_backup.db"
+    },
+    {
+      "step": "restore",
+      "seconds": 0.013
+    }
+  ],
+  "counts_before": {
+    "users": 1,
+    "conversations": 509,
+    "messages": 1014,
+    "anomaly_events": 3,
+    "anomaly_evidence": 35,
+    "agent_tasks": 509,
+    "agent_tool_calls": 3042,
+    "agent_report_drafts": 0,
+    "knowledge_documents": 6,
+    "audit_logs": 7
+  },
+  "counts_after": {
+    "users": 1,
+    "conversations": 509,
+    "messages": 1014,
+    "anomaly_events": 3,
+    "anomaly_evidence": 35,
+    "agent_tasks": 509,
+    "agent_tool_calls": 3042,
+    "agent_report_drafts": 0,
+    "knowledge_documents": 6,
+    "audit_logs": 7
+  },
+  "consistent": true,
+  "generated_at": "2026-11-06T01:57:46.941116+00:00"
+}

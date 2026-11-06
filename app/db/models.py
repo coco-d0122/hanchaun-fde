@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -377,6 +377,53 @@ class ReviewRecord(Base):
     reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reviewed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     status: Mapped[str] = mapped_column(String(16), default="submitted")
+
+
+class MeterReadingRow(Base):
+    """电表读数落库表 meter_readings（阶段11：真实采集通道的落库点）。
+
+    与 CSV 演示数据字段一一对应；唯一键 (meter_id, ts) 保证采集批次
+    重复导入不翻倍（阶段9 D2-05 幂等验收）。写入方：采集网关 /
+    scripts/ingest_meter_batch.py；当前查询链路仍读 CSV 演示数据，
+    接入真实数据源时 data_service 增加 db 数据源切换（DATA_SOURCE）。
+    """
+
+    __tablename__ = "meter_readings"
+    __table_args__ = (
+        Index("ux_meter_readings_key", "meter_id", "ts", unique=True),
+        Index("ix_meter_readings_building", "building_id", "ts"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    meter_id: Mapped[str] = mapped_column(String(32))
+    ts: Mapped[datetime] = mapped_column(DateTime)
+    raw_reading: Mapped[float] = mapped_column(Float)       # 累计示值（表底）
+    multiplier: Mapped[float] = mapped_column(Float, default=1.0)
+    unit: Mapped[str] = mapped_column(String(8), default="kWh")
+    building_id: Mapped[str] = mapped_column(String(16), default="")
+    parent_meter_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class LlmUsage(Base):
+    """LLM 用量账本 llm_usage（阶段11：Token 日预算的数据来源）。
+
+    每次真实 LLM 调用（chat / agent / probe）记一行：prompt 与 completion 的
+    token 估算值 + UTC 日期。日预算熔断按 (user_id, day) 汇总。
+    估算口径见 app/core/token_budget.py——mock 调用同样记录（口径一致，
+    上线换真实模型时预算行为不变）。
+    """
+
+    __tablename__ = "llm_usage"
+    __table_args__ = (Index("ix_llm_usage_user_day", "user_id", "day"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="chat")   # chat / agent / probe
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    day: Mapped[str] = mapped_column(String(10))                    # UTC 日期 YYYY-MM-DD
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 # ==============================================================================

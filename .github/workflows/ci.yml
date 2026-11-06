@@ -48,6 +48,11 @@ jobs:
       - name: 评测集校验 + 30 条用例全量执行
         run: pytest tests/evaluation -q
 
+      - name: 依赖漏洞扫描（pip-audit，N-09）
+        run: |
+          pip install pip-audit
+          pip-audit --skip-editable
+
       - name: 生成评测报告（供下载）
         if: always()
         uses: actions/upload-artifact@v4

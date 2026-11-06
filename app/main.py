@@ -20,13 +20,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import anyio
-from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import admin, agent, anomalies, audit, auth, chat, kb, logs, prompts, sessions, users
+from app.api.deps import require_permission
 from app.core.config import get_settings
 from app.core.llm import call_llm
+from app.core.metrics import MetricsMiddleware, render_prometheus
 from app.core.ratelimit import RateLimitMiddleware
 from app.db import repo
 from app.db.models import Base
@@ -159,6 +161,9 @@ app = FastAPI(
 )
 
 register_error_handlers(app)
+# 指标中间件在最外层（先于限流装配：被限流拒绝的请求同样计入请求量）。
+if get_settings().metrics_enabled:
+    app.add_middleware(MetricsMiddleware)
 # 限流放在中间件最外层：先挡住超量请求，再进业务逻辑与 LLM 调用。
 # 纯 ASGI 实现（不用 BaseHTTPMiddleware），避免缓冲 SSE 响应。
 if get_settings().rate_limit_enabled:
@@ -200,6 +205,48 @@ async def health() -> dict:
             "ready": bool(getattr(app.state, "llm_ready", False)),
         },
     }
+
+
+@app.get("/api/metrics", tags=["ops"],
+         dependencies=[Depends(require_permission("log:read"))])
+async def metrics() -> PlainTextResponse:
+    """Prometheus 抓取端点（阶段11）：进程内请求指标 + 库内工具失败率/当日用量。
+
+    权限：log:read（管理员）。不做对外暴露——试点期建议由内网抓取器访问。
+    """
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import func, select
+
+    lines = [render_prometheus()]
+
+    # 工具失败率（最近 24h）与当日 LLM 用量：抓取时实时查库
+    from app.core.token_budget import utc_today
+    from app.db.models import LlmUsage
+    from app.db.session import session_factory
+    async with session_factory() as db:
+        async with db.begin():
+            tool = await repo.tool_failure_stats(
+                db, datetime.utcnow() - timedelta(hours=24))
+            tokens = (await db.execute(
+                select(func.coalesce(func.sum(
+                    LlmUsage.prompt_tokens + LlmUsage.completion_tokens), 0))
+                .where(LlmUsage.day == utc_today()))).scalar_one()
+    total_calls = tool["ok"] + tool["failed"]
+    fail_rate = (tool["failed"] / total_calls) if total_calls else 0.0
+
+    lines.append("# HELP agent_tool_calls_total 最近24h工具调用数（按成败）")
+    lines.append("# TYPE agent_tool_calls_total counter")
+    lines.append(f'agent_tool_calls_total{{result="ok"}} {tool["ok"]}')
+    lines.append(f'agent_tool_calls_total{{result="failed"}} {tool["failed"]}')
+    lines.append("# HELP agent_tool_failure_ratio 最近24h工具失败率")
+    lines.append("# TYPE agent_tool_failure_ratio gauge")
+    lines.append(f"agent_tool_failure_ratio {fail_rate:.4f}")
+    lines.append("# HELP llm_tokens_used_today 当日LLM token用量（全用户）")
+    lines.append("# TYPE llm_tokens_used_today gauge")
+    lines.append(f"llm_tokens_used_today {int(tokens or 0)}")
+
+    return PlainTextResponse("\n".join(lines), media_type="text/plain; version=0.0.4")
 
 
 # ---- 静态页面（聊天界面宿主）----

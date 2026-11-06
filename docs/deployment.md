@@ -153,7 +153,8 @@ docker compose down && docker run -d --name hanchuan-agent ... hanchuan-energy-a
 进程内固定窗口，重启即清零；单用户 240/分钟对"一个人反复点"够用，
 但**挡不住分布式压测**，也不做队列。真实并发上量前必须：
 
-1. 用 `scripts/` 下压测脚本（待补）跑出 30 并发基线；
+1. 压测基线已跑出（阶段11）：30 并发读路径 P95 430ms、5xx=0；Agent 30 并发 P95 18.1s
+   （mock 模型口径，真实 LLM 下需重测）。脚本：`scripts/load_test.py`，报告：`eval/load_test_report.json`；
 2. 换 PostgreSQL + Redis（限流与缓存外置）；
 3. 反向代理层再加一层连接数与速率限制。
 

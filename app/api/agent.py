@@ -28,6 +28,7 @@ from app.api.deps import (
     require_csrf_header,
     require_permission,
 )
+from app.core import token_budget
 from app.core.config import get_settings
 from app.db import repo
 from app.db.models import User
@@ -73,6 +74,21 @@ async def analyze(req: AgentRequest, request: Request,
     retriever = getattr(request.app.state, "retriever", None)
     if retriever is None or not retriever.chunks:
         raise kb_not_ready()
+
+    # ---- LLM 日预算（阶段11）：超限 429，不创建任务不产生费用 ----
+    await token_budget.enforce_daily_budget(user.id, cfg)
+
+    # ---- 行级数据范围（阶段11）：限权用户只能分析授权楼栋内的事件 ----
+    if req.anomaly_id:
+        async with session_factory() as db:
+            async with db.begin():
+                scope = await repo.get_user_building_scope(db, user.id)
+                ev_row = await repo.get_anomaly_event(db, req.anomaly_id)
+        if ev_row is None:
+            raise AppError("ANOMALY_NOT_FOUND", "异常事件不存在或已被删除", 404,
+                           {"anomaly_id": req.anomaly_id})
+        if not repo.building_allowed(scope, ev_row.building_id):
+            raise AppError("FORBIDDEN", "无权查看该楼栋的数据", 403)
 
     # 会话：沿用传入的（须属本人），否则新建——审计链需要 messages 落库
     created_conversation = False
@@ -121,6 +137,10 @@ async def analyze(req: AgentRequest, request: Request,
             return
 
         content = "".join(answer_parts)
+        # 阶段11：LLM 用量记账（prompt 侧按问题+证据估算，mock 与真实同口径）
+        prompt_estimate = req.question + "".join(
+            e.get("excerpt", "") for e in runner.ctx.evidence)
+        await token_budget.record_llm_usage(user.id, "agent", prompt_estimate, content)
         # ---- 人工确认模式：草稿已随 token 流式下发，这里落账本并暂停 Agent ----
         if req.require_confirmation and req.engine == "harness" \
                 and getattr(runner, "last_report", None) is not None:
@@ -281,3 +301,73 @@ async def get_draft(draft_id: str,
         "decided_at": draft.decided_at.isoformat() if draft.decided_at else None,
         "content_chars": len(draft.content or ""),
     }
+
+
+# ============================== 阶段11：报告导出（N-13） ==============================
+
+import html as _html  # noqa: E402
+
+from fastapi.responses import Response  # noqa: E402
+
+
+@router.get("/tasks/{task_id}/report")
+async def export_task_report(
+    task_id: str = Path(min_length=6, max_length=32),
+    format: Literal["md", "html"] = Query("md"),
+    user: Annotated[User, Depends(get_current_user)] = None,  # noqa: RUF013
+) -> Response:
+    """导出任务的最新报告草稿（Markdown / HTML），供线下签核流转（N-13）。
+
+    权限与任务详情一致：本人任务可导出，他人任务需 admin。
+    未生成过报告草稿 → 404。导出的是"待复核草稿"，页眉注明不代表已确认结论。
+    """
+    async with session_factory() as db:
+        async with db.begin():
+            detail = await repo.get_agent_task_detail(db, task_id)
+            if detail is None:
+                raise AppError("TASK_NOT_FOUND", "Agent 任务不存在", 404)
+            if detail["user_id"] not in (None, user.id):
+                if "admin" not in {r.code for r in user.roles}:
+                    raise AppError("FORBIDDEN", "当前角色无权导出该任务报告", 403)
+            draft = await repo.get_latest_draft_by_task(db, task_id)
+    if draft is None or not (draft.content or "").strip():
+        raise AppError("REPORT_NOT_FOUND",
+                       "该任务尚未生成报告草稿，无法导出", 404)
+
+    header = (
+        f"# 能耗异常分析报告草稿\n\n"
+        f"- 任务编号：{detail['task_id']}\n"
+        f"- 报告版本：v{draft.report_version}（草稿状态：{draft.status}）\n"
+        f"- 创建时间：{draft.created_at.isoformat()}\n"
+        f"- 强制复核：{'是（' + draft.force_reason + '）' if draft.force_review else '否'}\n\n"
+        f"> 本文件为 AI 生成的待复核草稿，**不代表已确认结论**；\n"
+        f"> 最终结论以人工复核（签核）记录为准。\n\n---\n\n"
+    )
+
+    if format == "html":
+        body = _html.escape(draft.content).replace("\n", "<br>\n")
+        page = (
+            "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n"
+            "<meta charset=\"utf-8\">\n<title>能耗异常分析报告草稿 "
+            f"{_html.escape(detail['task_id'])}</title>\n"
+            "<style>body{font-family:system-ui,'Microsoft YaHei',sans-serif;"
+            "max-width:860px;margin:2rem auto;padding:0 1rem;color:#222}"
+            "header{border-bottom:2px solid #c0392b;padding-bottom:.5rem;margin-bottom:1rem}"
+            ".warn{background:#fff3cd;border:1px solid #e0c068;padding:.6rem 1rem;"
+            "border-radius:4px}</style>\n</head>\n<body>\n"
+            f"<header><h1>能耗异常分析报告草稿</h1>"
+            f"<p>任务编号：{_html.escape(detail['task_id'])}｜版本：v{draft.report_version}"
+            f"｜状态：{_html.escape(draft.status)}</p></header>\n"
+            "<p class=\"warn\">本文件为 AI 生成的待复核草稿，不代表已确认结论；"
+            "最终结论以人工复核（签核）记录为准。</p>\n"
+            f"<article>\n{body}\n</article>\n</body>\n</html>\n"
+        )
+        return Response(
+            content=page, media_type="text/html; charset=utf-8",
+            headers={"Content-Disposition":
+                     f'attachment; filename="report-{detail["task_id"]}.html"'})
+
+    return Response(
+        content=header + draft.content, media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="report-{detail["task_id"]}.md"'})

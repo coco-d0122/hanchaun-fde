@@ -44,6 +44,56 @@ class UserPatch(BaseModel):
     new_password: str | None = Field(default=None, min_length=8, max_length=128)
 
 
+class ScopePatch(BaseModel):
+    """数据范围设置（阶段11 行级权限）：scope_type=all 表示不限制。"""
+    scope_type: Literal["all", "buildings"]
+    scope_values: list[str] = Field(default_factory=list,
+                                    max_length=32)
+
+
+@router.get("/{user_id}/scope", dependencies=[Depends(require_permission("user:read"))])
+async def get_user_scope(user_id: int) -> dict:
+    """查看用户数据范围（阶段11 行级权限）。"""
+    async with session_factory() as db:
+        async with db.begin():
+            user = await repo.get_user(db, user_id)
+            if user is None:
+                raise AppError("USER_NOT_FOUND", "用户不存在", 404, {"user_id": user_id})
+            scope = await repo.get_user_building_scope(db, user_id)
+    return {"user_id": user_id, "scope_type": scope[0], "buildings": scope[1]}
+
+
+@router.put("/{user_id}/scope", dependencies=[Depends(require_permission("user:write")),
+                                              Depends(require_csrf_header)])
+async def set_user_scope(user_id: int, body: ScopePatch, request: Request) -> dict:
+    """设置用户数据范围（限权到楼栋）。admin 角色不受 scope 影响（恒为 all）。
+
+    越权拦截语义：范围外楼栋的异常详情/Agent 分析返回 403，列表只返回授权楼栋。
+    """
+    if body.scope_type == "buildings" and not body.scope_values:
+        raise AppError("PARAM_INVALID", "buildings 范围必须给出至少一个楼栋编号", 422)
+    async with session_factory() as db:
+        async with db.begin():
+            user = await repo.get_user(db, user_id)
+            if user is None:
+                raise AppError("USER_NOT_FOUND", "用户不存在", 404, {"user_id": user_id})
+            role_codes = await repo.get_user_role_codes(db, user)
+            if "admin" in role_codes:
+                raise AppError("SCOPE_CONFLICT",
+                               "管理员账号不设置楼栋范围（恒为全部数据）", 400)
+            ok = await repo.set_user_scope(
+                db, user_id, body.scope_type, body.scope_values)
+            if not ok:
+                raise AppError("USER_NOT_FOUND", "用户没有任何角色记录", 404)
+            await repo.write_audit_log(
+                db, "user_scope_update", user_id,
+                object_type="user", object_id=str(user_id),
+                detail={"scope_type": body.scope_type,
+                        "buildings": body.scope_values, "username": user.username})
+    return {"user_id": user_id, "scope_type": body.scope_type,
+            "buildings": sorted(set(body.scope_values)) if body.scope_type == "buildings" else []}
+
+
 @router.get("", dependencies=[Depends(require_permission("user:read"))])
 async def get_users() -> dict:
     """用户列表（不含任何密码信息）。"""

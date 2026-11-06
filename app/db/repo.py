@@ -1536,3 +1536,81 @@ async def set_draft_risk_request(db: AsyncSession, draft_id: str,
     await db.execute(update(AgentReportDraft)
                      .where(AgentReportDraft.draft_id == draft_id)
                      .values(review_request_id=review_request_id))
+
+
+# ============================== 阶段11：数据范围 / 报告导出 / 指标 ==============================
+
+async def get_user_building_scope(db: AsyncSession, user_id: int) -> tuple[str, list[str]]:
+    """行级数据范围（N-02）：读取 user_roles.scope_type/scope_values。
+
+    规则：
+      - 任一角色为 admin，或所有角色 scope_type 均为默认 "all" → ("all", [])
+      - 任一角色配置了 scope_type="buildings" → 取各角色 scope_values 的并集
+        （多角色按并集放行，最小惊讶原则）
+    返回 (scope_type, allowed_buildings)；scope_type=all 时不限制。
+    """
+    stmt = (select(Role.code, UserRole.scope_type, UserRole.scope_values)
+            .join(UserRole, UserRole.role_id == Role.id)
+            .where(UserRole.user_id == user_id))
+    rows = (await db.execute(stmt)).all()
+    if any(code == "admin" for code, _, _ in rows):
+        return ("all", [])
+    allowed: set[str] = set()
+    restricted = False
+    for _, scope_type, values in rows:
+        if scope_type == "buildings":
+            restricted = True
+            allowed.update(str(v) for v in (values or []))
+    if not restricted:
+        return ("all", [])
+    return ("buildings", sorted(allowed))
+
+
+def building_allowed(scope: tuple[str, list[str]], building_id: str | None) -> bool:
+    """判断某楼栋是否在用户数据范围内（scope=all 恒通过）。"""
+    scope_type, allowed = scope
+    if scope_type != "buildings":
+        return True
+    return building_id in allowed
+
+
+async def set_user_scope(db: AsyncSession, user_id: int,
+                         scope_type: str, scope_values: list[str]) -> bool:
+    """设置用户数据范围（管理接口用）：作用于该用户全部 user_roles 行。
+
+    scope_type 仅接受 all / buildings；buildings 时 scope_values 必须非空。
+    返回是否存在该用户的角色记录。
+    """
+    if scope_type not in ("all", "buildings"):
+        raise ValueError("scope_type 仅支持 all / buildings")
+    if scope_type == "buildings" and not scope_values:
+        raise ValueError("buildings 范围必须给出至少一个楼栋编号")
+    result = await db.execute(
+        update(UserRole).where(UserRole.user_id == user_id)
+        .values(scope_type=scope_type,
+                scope_values=[] if scope_type == "all" else sorted(set(scope_values))))
+    return bool(result.rowcount)
+
+
+async def get_latest_draft_by_task(db: AsyncSession, task_id: str):
+    """取某 Agent 任务最新一版报告草稿（报告导出用）。"""
+    from app.db.models import AgentReportDraft
+
+    return (await db.execute(
+        select(AgentReportDraft)
+        .where(AgentReportDraft.task_id == task_id)
+        .order_by(AgentReportDraft.report_version.desc(), AgentReportDraft.created_at.desc())
+        .limit(1))).scalar_one_or_none()
+
+
+async def tool_failure_stats(db: AsyncSession, since: datetime) -> dict[str, int]:
+    """Agent 工具调用成败统计（/api/metrics 的工具失败率数据源）。"""
+    from app.db.models import AgentToolCall
+
+    stmt = (select(AgentToolCall.success, func.count(AgentToolCall.id))
+            .where(AgentToolCall.created_at >= since)
+            .group_by(AgentToolCall.success))
+    counts = {"ok": 0, "failed": 0}
+    for ok, n in (await db.execute(stmt)).all():
+        counts["ok" if ok else "failed"] = int(n)
+    return counts

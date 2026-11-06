@@ -363,6 +363,10 @@ async def chat_stream(
             if req.mode == "anomaly" and req.anomaly_id:
                 await repo.mark_anomaly_analyzed(db, req.anomaly_id)
 
+    # 阶段11：LLM 用量记账（mock 与真实模型同口径，日预算熔断依赖此数据）
+    from app.core import token_budget
+    await token_budget.record_llm_usage(user_id, "chat", prompt, content)
+
     yield sse_frame("done", {
         "message_id": message_id,
         "status": "complete",

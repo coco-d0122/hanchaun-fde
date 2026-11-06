@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import require_csrf_header, require_login
+from app.core import token_budget
 from app.core.config import get_settings
 from app.db import repo
 from app.db.models import User
@@ -31,6 +32,9 @@ router = APIRouter(prefix="/api", tags=["chat"])
 async def post_chat(req: ChatRequest, request: Request,
                     user: Annotated[User, Depends(require_login)]) -> StreamingResponse:
     cfg = get_settings()
+
+    # ---- 建流前校验 0：LLM 日预算（阶段11，超限 429 中文提示）----
+    await token_budget.enforce_daily_budget(user.id, cfg)
 
     # ---- 建流前校验 1：知识库就绪 ----
     retriever = getattr(request.app.state, "retriever", None)

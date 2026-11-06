@@ -247,24 +247,27 @@ curl -s localhost:8000/api/health | python -m json.tool
 
 - 制度问答（RAG + 依据判定 + 引用）、能耗查询、六项数据校验、规则 A/B 异常检测
 - Agent 双通道、8 工具、依赖门禁、五道闸、5 轮上限、防重复调用、执行日志
-- 报告草稿 + 用户确认 + 四重校验 + 复核请求（pending）
+- 报告草稿 + 用户确认 + 四重校验 + 复核请求（pending）+ 报告导出（MD/HTML）
 - 多轮上下文（代词/序数/楼栋别名/相对日期/追问），歧义反问
 - RBAC + JWT + CSRF + 会话归属校验 + 限流 + Agent 停用开关
+- 行级数据范围（楼栋 scope）+ LLM 日预算熔断（429 中文提示）+ Prometheus 指标端点
 - 管理后台 9 个页面、知识库上传/重处理/软删除、提示词版本与恢复、审计与日志
-- 30 条评测用例 + 执行器、4 套自测、pytest 分层、GitHub Actions
+- 30 条评测用例 + 执行器、4 套自测、pytest 分层、GitHub Actions（含 pip-audit）
+- 采集批次幂等落库通道（meter_readings 唯一键）、压测与备份恢复演练脚本
 
 ### 待开发（未实现，勿在对外材料中声称已完成）
 
 | 项 | 影响 | 参考 |
 |---|---|---|
-| 实时数据采集管道与 15 分钟调度 | 当前读 CSV，不是实时数据 | 阶段9 D2-05 / A-03 |
-| 跨楼栋/跨租户数据范围过滤 | 越权防护只到角色级 | 阶段9 D1-01 |
+| 实时数据采集调度（15 分钟周期） | 查询链路仍读 CSV；幂等落库通道已就绪（`scripts/ingest_meter_batch.py`），缺调度器与 db 数据源切换 | 阶段9 D2-05 / A-03 |
 | 业务签核通道（`review_records` 写入） | 签核只能线下 | 阶段9 D3-05 / A-04 |
-| 压测与并发基线 | 并发能力无证据 | 阶段9 D2-01 |
-| Token 日预算与用量统计 | 费用只能靠请求限流兜 | 阶段9 D2-02 |
-| 监控告警与备份恢复演练 | 出故障靠人工看日志 | 阶段9 D5-01/02 |
-| 真实 LLM 下的评测基线 | 现有评测均在离线规划器下 | 阶段8 报告"残留风险" |
-| 依赖漏洞扫描（SCA）、渗透测试 | 安全证据不完整 | 阶段9 §5 |
+| 真实 LLM 下的评测与压测基线 | 现有评测与压测均在离线规划器下 | 阶段8 报告"残留风险" |
+| OCR、报告 PDF 导出、外部通知 | 可接受（当前 MD/HTML 导出已够线下流转） | 阶段10 N-12/N-13 |
+| Docker 镜像构建验证、CI 运行观测 | 环境限制（本机守护进程/runner 不可用） | 阶段10 N-10/N-11 |
+| 多实例部署（PG + Redis + 外部向量库） | 试点单机够用 | 阶段10 N-15 |
+
+阶段11 补齐记录（含压测数据、恢复演练、漏洞扫描结果）：
+[docs/acceptance/阶段11_未完成项补齐记录_v1.0.md](docs/acceptance/阶段11_未完成项补齐记录_v1.0.md)
 
 ## 十五、工业安全边界与使用限制
 
@@ -285,6 +288,7 @@ curl -s localhost:8000/api/health | python -m json.tool
 - [docs/architecture.md](docs/architecture.md) · [api.md](docs/api.md) · [deployment.md](docs/deployment.md) · [security.md](docs/security.md)
 - [docs/acceptance/阶段9_上线前检查清单与试点验收方案_v1.0.md](docs/acceptance/阶段9_上线前检查清单与试点验收方案_v1.0.md)
 - [docs/acceptance/阶段10_自检与发布记录_v1.0.md](docs/acceptance/阶段10_自检与发布记录_v1.0.md)
+- [docs/acceptance/阶段11_未完成项补齐记录_v1.0.md](docs/acceptance/阶段11_未完成项补齐记录_v1.0.md)
 - 各阶段设计与验收记录：[docs/phases/](docs/phases/)
 
 ## 许可

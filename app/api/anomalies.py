@@ -18,7 +18,7 @@ from app.api.deps import get_current_user, require_permission
 from app.db import repo
 from app.db.models import User
 from app.db.session import session_factory
-from app.errors import anomaly_not_found
+from app.errors import AppError, anomaly_not_found
 
 router = APIRouter(prefix="/api/anomalies", tags=["anomalies"],
                    dependencies=[Depends(require_permission("anomaly:read"))])
@@ -38,27 +38,45 @@ async def get_anomalies(
     date_from: str | None = Query(None, description="起始日期 YYYY-MM-DD"),
     date_to: str | None = Query(None, description="结束日期 YYYY-MM-DD"),
 ) -> dict:
-    """异常事件列表：状态（六态）/ 电表 / 楼栋 / 类型 / 时间范围组合筛选。"""
+    """异常事件列表：状态（六态）/ 电表 / 楼栋 / 类型 / 时间范围组合筛选。
+
+    阶段11 行级数据范围：scope 限权用户只会看到授权楼栋的事件；
+    显式请求范围外楼栋返回 403（不返回空列表假装没数据）。
+    """
     async with session_factory() as db:
         async with db.begin():
+            scope = await repo.get_user_building_scope(db, user.id)
+            if building_id and not repo.building_allowed(scope, building_id):
+                raise AppError("FORBIDDEN", "无权查看该楼栋的数据", 403)
             items = await repo.list_anomaly_events(
                 db, status=status, meter_id=meter_id, building_id=building_id,
                 anomaly_type=anomaly_type, date_from=date_from, date_to=date_to)
-    return {"items": items, "total": len(items)}
+    # scope 限权：过滤掉范围外楼栋的事件（scope=all 时原样返回）
+    if scope[0] == "buildings":
+        allowed = set(scope[1])
+        items = [i for i in items if i["building_id"] in allowed]
+    return {"items": items, "total": len(items),
+            "scope": {"type": scope[0], "buildings": scope[1]}}
 
 
 @router.get("/{anomaly_id}")
-async def get_anomaly_detail(anomaly_id: str = Path(max_length=32)) -> dict:
+async def get_anomaly_detail(anomaly_id: str = Path(max_length=32),
+                             user: Annotated[User, Depends(get_current_user)] = None) -> dict:  # noqa: RUF013
     """异常事件详情：电表信息、规则检测结果、证据来源。不允许修改原始能耗数据。
 
     规则结果（原始）与 AI 分析（草稿）在审计页**分离展示**：
     本接口只返回规则侧，AI 分析草稿通过 /api/audit/conversations 按 anomaly_id 追溯。
+
+    阶段11 行级数据范围：scope 限权用户访问范围外楼栋 → 403。
     """
     async with session_factory() as db:
         async with db.begin():
             row = await repo.get_anomaly_event(db, anomaly_id)
             if row is None:
                 raise anomaly_not_found(anomaly_id)
+            scope = await repo.get_user_building_scope(db, user.id)
+            if not repo.building_allowed(scope, row.building_id):
+                raise AppError("FORBIDDEN", "无权查看该楼栋的数据", 403)
             evidence_rows = await repo.get_anomaly_evidence(db, anomaly_id)
             extra = row.extra or {}
 

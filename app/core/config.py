@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1400
     # LLM 失败时是否降级为离线模拟输出（阶段4方案 C2 默认：降级 + 前端角标）
     llm_fallback_mock: bool = True
+    # 阶段11：单用户 LLM 日 Token 预算（prompt+completion 估算值累计；0 = 不限）
+    # 达到预算后当日新请求返回 429 中文提示，防 Key 泄漏或死循环烧穿费用。
+    llm_daily_token_budget: int = 500_000
 
     # ---- Embedding ----
     embedding_provider: str = "auto"      # auto | hash | api | st
@@ -88,6 +91,9 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 240          # 单用户每分钟请求数（试点建议值，待压测校准）
     rate_limit_global_per_minute: int = 1200  # 全系统每分钟请求数（兜底总量）
+
+    # ---- 阶段11：监控指标（进程内计数器；多实例部署需换 Prometheus 客户端 + 汇聚）----
+    metrics_enabled: bool = True
 
     # ---- 只读路径（相对 backend 根目录解析）----
     @property

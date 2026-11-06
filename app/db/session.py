@@ -20,12 +20,15 @@ from app.core.config import get_settings
 settings = get_settings()
 
 # check_same_thread=False：aio­sqlite 的连接在线程池与事件循环间交接，必须放开
+# timeout：写锁冲突时的等待秒数（压测实测 30 并发下默认 0 会直接抛
+# "database is locked" → 5xx；配合 WAL 与 busy_timeout 可消除）。
 # json_serializer：JSON 列（audit_logs.detail / user_roles.scope_values）保留中文原文，
 #   否则写库时被转成 \uXXXX，排查日志时不可读（对外接口不受影响，那里是反序列化后的对象）
 engine = create_async_engine(
     settings.db_url,
     echo=False,
-    connect_args={"check_same_thread": False} if settings.db_url.startswith("sqlite") else {},
+    connect_args={"check_same_thread": False, "timeout": 30}
+    if settings.db_url.startswith("sqlite") else {},
     json_serializer=lambda obj: json.dumps(obj, ensure_ascii=False),
 )
 
@@ -34,8 +37,9 @@ session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 @event.listens_for(engine.sync_engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record):  # noqa: ANN001
-    """每个新连接上打开 WAL 与外键约束（SQLite 默认关闭外键）。"""
+    """每个新连接上打开 WAL、外键约束与写锁等待（SQLite 默认关闭外键）。"""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=10000")
     cursor.close()

@@ -115,6 +115,8 @@ SSE 事件：`task` → `status` → `round` → `tool_call` → `tool_result` �
 | GET | `/api/users` | 用户列表 |
 | POST | `/api/users` | 创建用户 |
 | PATCH | `/api/users/{user_id}` | 改角色 / 禁用启用 |
+| GET | `/api/users/{user_id}/scope` | 查看数据范围（阶段11 行级权限） |
+| PUT | `/api/users/{user_id}/scope` | 设置数据范围（`scope_type=all/buildings`，管理员自身不可限权） |
 
 权限码 13 个、角色 2 个（`user` / `admin`）。`anomaly:review:submit`（业务签核）
 **不授予任何角色**，包括管理员。
@@ -141,6 +143,7 @@ SSE 事件：`task` → `status` → `round` → `tool_call` → `tool_result` �
 | GET | `/api/sessions` | 我的会话列表 |
 | GET | `/api/sessions/{session_id}/messages` | 会话消息（他人会话按不存在处理） |
 | GET | `/api/health` | 健康检查：知识库切片数、LLM 就绪、缓存状态 |
+| GET | `/api/metrics` | Prometheus 指标（阶段11）：请求量/5xx/耗时/工具失败率/当日 token，需 `log:read` |
 
 ```bash
 curl -s http://127.0.0.1:8000/api/health | python -m json.tool
@@ -167,3 +170,27 @@ Retry-After: 37
 
 > 路径参数名以代码为准（如 `{anomaly_id}`、`{doc_id}`）：本文档与 `app.openapi()` 逐个路径核对一致，
 > 只有参数命名差异，没有缺漏接口。
+
+## 12. Agent 报告导出（阶段11）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/agent/tasks/{task_id}/report` | 导出任务最新报告草稿，`?format=md\|html`（默认 md），附件下载；本人可导，他人需 admin；无草稿返回 404 `REPORT_NOT_FOUND`。导出件页眉注明"待复核草稿，不代表已确认结论" |
+
+## 13. LLM 日预算（阶段11）
+
+单用户当日（UTC）LLM token 累计超过 `LLM_DAILY_TOKEN_BUDGET`（默认 500000，0=不限）时，
+`POST /api/chat` 与 `POST /api/agent/analyze` 建流前返回：
+
+```http
+HTTP/1.1 429 Too Many Requests
+
+{"code":"LLM_BUDGET_EXCEEDED","message":"今日 AI 调用额度已用完，请稍后再试或联系管理员。","details":null}
+```
+
+## 14. 行级数据范围（阶段11）
+
+`user_roles.scope_type/scope_values` 正式启用：限权用户（scope_type=buildings）
+只看到授权楼栋的异常事件；访问范围外楼栋的详情/Agent 分析/显式楼栋筛选一律
+403 `FORBIDDEN`（不返回空列表假装无数据）。管理员恒为全部数据。
+
